@@ -72,37 +72,50 @@ static void HonggfuzzPersistentLoop(void) {
 }
 
 static int HonggfuzzRunFromFile(int argc, char** argv) {
-    int         in_fd = STDIN_FILENO;
-    const char* fname = "[STDIN]";
-    if (argc > 1) {
-        fname = argv[argc - 1];
-        if ((in_fd = TEMP_FAILURE_RETRY(open(argv[argc - 1], O_RDONLY))) == -1) {
-            PLOG_W("Cannot open '%s' as input, using stdin", argv[argc - 1]);
-            in_fd = STDIN_FILENO;
-            fname = "[STDIN]";
-        }
-    }
-
-    LOG_I("Accepting input from '%s'", fname);
+    LOG_I("🔥💃🔥💃🔥💃🔥💃🔥💃🔥💃🔥💃🔥💃🔥💃🔥💃🔥💃");
     LOG_I("Usage for fuzzing: honggfuzz -P [flags] -- %s", argv[0]);
 
     uint8_t* buf = (uint8_t*)util_Calloc(_HF_INPUT_MAX_SIZE);
-    ssize_t  len = files_readFromFd(in_fd, buf, _HF_INPUT_MAX_SIZE);
-    if (len < 0) {
-        LOG_E("Couldn't read data from stdin: %s", strerror(errno));
-        free(buf);
-        if (in_fd != STDIN_FILENO) {
-            close(in_fd);
+
+    /* If no file arguments provided, read from stdin */
+    if (argc <= 1) {
+        LOG_I("Accepting input from '[STDIN]'");
+        ssize_t len = files_readFromFd(STDIN_FILENO, buf, _HF_INPUT_MAX_SIZE);
+        if (len < 0) {
+            LOG_E("Couldn't read data from stdin: %s", strerror(errno));
+            free(buf);
+            return -1;
         }
-        return -1;
+        HonggfuzzRunOneInput(buf, len);
+        free(buf);
+        return 0;
     }
 
-    HonggfuzzRunOneInput(buf, len);
-    free(buf);
-    if (in_fd != STDIN_FILENO) {
+    /* Process each file argument */
+    int ret = 0;
+    for (int i = 1; i < argc; i++) {
+        const char* fname = argv[i];
+        int in_fd = TEMP_FAILURE_RETRY(open(fname, O_RDONLY));
+        if (in_fd == -1) {
+            PLOG_W("Cannot open '%s' as input, skipping", fname);
+            continue;
+        }
+
+        LOG_I("Processing input file: '%s'", fname);
+        ssize_t len = files_readFromFd(in_fd, buf, _HF_INPUT_MAX_SIZE);
         close(in_fd);
+
+        if (len < 0) {
+            LOG_E("Couldn't read data from '%s': %s", fname, strerror(errno));
+            ret = -1;
+            continue;
+        }
+
+        HonggfuzzRunOneInput(buf, len);
     }
-    return 0;
+
+    free(buf);
+    return ret;
 }
 
 int HonggfuzzMain(int argc, char** argv) {
