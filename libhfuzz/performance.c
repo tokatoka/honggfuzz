@@ -46,6 +46,7 @@ static bool performanceInit(void) {
 bool performanceTooSlow(void) {
     uint64_t timeDiffUSecs = util_timeNowUSecs() - lastCheckUSecs;
     if (timeDiffUSecs > HF_CHECK_INTERVAL_USECS) {
+#if 0
         uint64_t currentUSecsPerExec = timeDiffUSecs / (iterCnt - lastCheckIters);
         if (currentUSecsPerExec > (initialUSecsPerExec * HF_RESET_RATIO)) {
             LOG_W("Thread %u (pid=%d) became too slow to process fuzzing data, initial: %" PRIu64
@@ -53,6 +54,7 @@ bool performanceTooSlow(void) {
                 instrumentThreadNo(), (int)getpid(), initialUSecsPerExec, currentUSecsPerExec);
             return true;
         }
+#endif
         lastCheckIters = iterCnt;
         lastCheckUSecs = util_timeNowUSecs();
     }
@@ -74,6 +76,8 @@ void performanceCheck(void) {
     }
 
     if (performanceTooSlow()) {
+#if 0
         exit(0);
+#endif
     }
 }
