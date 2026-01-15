@@ -28,6 +28,7 @@
 #include "libhfcommon/common.h"
 #include "libhfcommon/util.h"
 
+#ifdef HF_USE_ENTROPY_SCHEDULE
 /*
  * 0 = no entropy (single byte value), 100 = maximum entropy (uniform distribution).
  * Approximation of Shannon entropy.
@@ -81,6 +82,7 @@ static unsigned power_ComputeEntropy(const uint8_t* data, size_t len) {
 
     return HF_MIN(entropy, 100);
 }
+#endif /* HF_USE_ENTROPY_SCHEDULE */
 
 uint64_t power_calculateEnergy(run_t* run, dynfile_t* dynfile) {
     const uint64_t energyMax     = 32768;
@@ -221,6 +223,7 @@ uint64_t power_calculateEnergy(run_t* run, dynfile_t* dynfile) {
         }
     }
 
+#ifdef HF_USE_ENTROPY_SCHEDULE
     /* Entropy - penalize random blobs, boost structured data */
     if (dynfile->size > 0) {
         unsigned entropy = power_ComputeEntropy(dynfile->data, dynfile->size);
@@ -232,6 +235,7 @@ uint64_t power_calculateEnergy(run_t* run, dynfile_t* dynfile) {
             energy = (energy * 3) / 2; /* Text/Structured data - boost */
         }
     }
+#endif /* HF_USE_ENTROPY_SCHEDULE */
 
     /* Timeout - heavy penalty for timeout-causing inputs */
     if (dynfile->timedout) {
