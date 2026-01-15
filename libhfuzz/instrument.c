@@ -1,6 +1,7 @@
 #include "instrument.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -263,17 +264,38 @@ __attribute__((constructor)) void hfuzzInstrumentInit(void) {
     pthread_once(&localInitOnce, initializeInstrument);
 }
 
+/*
+ * Reserve guard numbers from the global counter in shared memory.
+ * Using atomic fetch-and-add ensures that multiple instrumented libraries
+ * loaded into the same process each get unique, non-overlapping guard numbers.
+ * This is critical when using LD_PRELOAD with multiple honggfuzz-instrumented
+ * shared libraries (e.g., Firedancer + Agave in differential fuzzing).
+ */
 __attribute__((weak)) size_t instrumentReserveGuard(size_t cnt) {
-    static size_t guardCnt = 1;
-    size_t        base     = guardCnt;
-    guardCnt += cnt;
-    if (guardCnt >= _HF_PC_GUARD_MAX) {
+    /* Ensure instrumentation is initialized (sets up globalCovFeedback) */
+    hfuzzInstrumentInit();
+
+    if (cnt == 0) {
+        /* Query current guard count without allocating */
+        return (size_t)ATOMIC_GET(globalCovFeedback->guardNb);
+    }
+
+    /* Atomically allocate guard numbers from the shared counter.
+     * Guard 0 is reserved (used as uninitialized marker), so we ensure
+     * the counter starts at 1. Use CAS to initialize if needed. */
+    uint64_t expected = 0;
+    __atomic_compare_exchange_n(&globalCovFeedback->guardNb, &expected, 1,
+                                false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+
+    /* Now atomically allocate our range of guards */
+    size_t base = (size_t)__atomic_fetch_add(&globalCovFeedback->guardNb, cnt, __ATOMIC_SEQ_CST);
+
+    size_t newTotal = base + cnt;
+    if (newTotal >= _HF_PC_GUARD_MAX) {
         LOG_F(
-            "This process requested too many PC-guards, total:%zu, requested:%zu)", guardCnt, cnt);
+            "This process requested too many PC-guards, total:%zu, requested:%zu)", newTotal, cnt);
     }
-    if (ATOMIC_GET(globalCovFeedback->guardNb) < guardCnt) {
-        ATOMIC_SET(globalCovFeedback->guardNb, guardCnt);
-    }
+
     return base;
 }
 
@@ -756,6 +778,17 @@ __attribute__((weak)) HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_indir_call16(
  * -fsanitize-coverage=trace-pc-guard
  */
 static bool                  guards_initialized = false;
+
+/* Check if coverage debug output is enabled via HFUZZ_COV_DEBUG=1 */
+static bool instrumentCovDebugEnabled(void) {
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char* env = getenv("HFUZZ_COV_DEBUG");
+        enabled = (env && (env[0] == '1' || env[0] == 'y' || env[0] == 'Y')) ? 1 : 0;
+    }
+    return enabled == 1;
+}
+
 HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start, uint32_t* stop) {
     guards_initialized = true;
 
@@ -771,8 +804,23 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
         return;
     }
 
+    size_t guardCount = ((uintptr_t)stop - (uintptr_t)start) / sizeof(*start);
+    
+    /* Debug output for coverage registration (enable with HFUZZ_COV_DEBUG=1) */
+    if (instrumentCovDebugEnabled()) {
+        /* Try to identify which library this coverage came from */
+        Dl_info info;
+        const char* libName = "unknown";
+        if (dladdr(start, &info) && info.dli_fname) {
+            libName = info.dli_fname;
+        }
+        /* Use the global guard counter from shared memory for accurate total */
+        size_t globalTotal = instrumentReserveGuard(0);
+        fprintf(stderr, "[HFUZZ-COV] PC-Guard: +%zu guards (global total: %zu) from %s\n",
+            guardCount, globalTotal + guardCount, libName);
+    }
     LOG_D("PC-Guard module initialization: %p-%p (count:%tu) at %zu", start, stop,
-        ((uintptr_t)stop - (uintptr_t)start) / sizeof(*start), instrumentReserveGuard(0));
+        guardCount, instrumentReserveGuard(0));
 
     for (uint32_t* x = start; x < stop; x++) {
         uint32_t guardNo = instrumentReserveGuard(1);
@@ -941,6 +989,20 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
             hf8bitcounters[i].start = (uint8_t*)start;
             hf8bitcounters[i].cnt   = (uintptr_t)end - (uintptr_t)start;
             hf8bitcounters[i].guard = instrumentReserveGuard(hf8bitcounters[i].cnt);
+            
+            /* Debug output for coverage registration (enable with HFUZZ_COV_DEBUG=1) */
+            if (instrumentCovDebugEnabled()) {
+                /* Try to identify which library this coverage came from */
+                Dl_info info;
+                const char* libName = "unknown";
+                if (dladdr(start, &info) && info.dli_fname) {
+                    libName = info.dli_fname;
+                }
+                /* Use the global guard counter from shared memory for accurate total */
+                size_t globalTotal = instrumentReserveGuard(0);
+                fprintf(stderr, "[HFUZZ-COV] 8-bit counters: +%zu guards (global total: %zu) from %s\n",
+                    hf8bitcounters[i].cnt, globalTotal, libName);
+            }
             LOG_D("8-bit module initialization %p-%p (count:%zu) at guard %zu", start, end,
                 hf8bitcounters[i].cnt, hf8bitcounters[i].guard);
             break;
