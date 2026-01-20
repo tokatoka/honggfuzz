@@ -1,0 +1,5 @@
+# Test binaries (built on demand, not committed)
+test_target
+test_target_8bit
+test_target_pcguard
+

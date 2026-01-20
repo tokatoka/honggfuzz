@@ -9,6 +9,7 @@
 #include <linux/mman.h>
 #endif /* defined(_HF_ARCH_LINUX) */
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -277,18 +278,18 @@ __attribute__((weak)) size_t instrumentReserveGuard(size_t cnt) {
 
     if (cnt == 0) {
         /* Query current guard count without allocating */
-        return (size_t)ATOMIC_GET(globalCovFeedback->guardNb);
+        return (size_t)atomic_load_explicit(&globalCovFeedback->guardNb, memory_order_relaxed);
     }
 
     /* Atomically allocate guard numbers from the shared counter.
      * Guard 0 is reserved (used as uninitialized marker), so we ensure
      * the counter starts at 1. Use CAS to initialize if needed. */
     uint64_t expected = 0;
-    __atomic_compare_exchange_n(&globalCovFeedback->guardNb, &expected, 1,
-                                false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    atomic_compare_exchange_strong_explicit(&globalCovFeedback->guardNb, &expected, 1,
+                                            memory_order_seq_cst, memory_order_seq_cst);
 
     /* Now atomically allocate our range of guards */
-    size_t base = (size_t)__atomic_fetch_add(&globalCovFeedback->guardNb, cnt, __ATOMIC_SEQ_CST);
+    size_t base = (size_t)atomic_fetch_add_explicit(&globalCovFeedback->guardNb, cnt, memory_order_seq_cst);
 
     size_t newTotal = base + cnt;
     if (newTotal >= _HF_PC_GUARD_MAX) {
@@ -789,6 +790,59 @@ static bool instrumentCovDebugEnabled(void) {
     return enabled == 1;
 }
 
+/*
+ * Simple spinlock for synchronizing cross-process module registration.
+ */
+static inline void moduleSpinlockAcquire(void) {
+    const uint64_t MAX_SPINS = 100000000ULL;  /* ~10s at 10M spins/s */
+    uint64_t spins = 0;
+    
+    for (;;) {
+        while (atomic_load_explicit(&globalCovFeedback->moduleRegistrationLock, memory_order_relaxed) != 0) {
+            #if defined(__x86_64__) || defined(__i386__)
+            __builtin_ia32_pause();
+            #elif defined(__aarch64__)
+            __asm__ volatile("yield");
+            #else
+            __asm__ volatile("" ::: "memory");
+            #endif
+            
+            if (++spins > MAX_SPINS) {
+                LOG_F("Spinlock timeout after ~10s - lock holder may have died or deadlocked");
+            }
+        }
+
+        uint32_t expected = 0;
+        if (atomic_compare_exchange_weak_explicit(&globalCovFeedback->moduleRegistrationLock,
+                                                  &expected, 1,
+                                                  memory_order_acquire, memory_order_relaxed)) {
+            return;  /* Successfully acquired */
+        }
+        /* Someone else got it first, retry */
+    }
+}
+
+static inline void moduleSpinlockRelease(void) {
+    atomic_store_explicit(&globalCovFeedback->moduleRegistrationLock, 0, memory_order_release);
+}
+
+/*
+ * Find a tracked module by path hash and guard count.
+ * Can be called with or without the lock (uses acquire ordering on count).
+ */
+static trackedModule_t* findTrackedModule(uint64_t pathHash, uint32_t guardCount) {
+    /* ACQUIRE load synchronizes with RELEASE store when count is incremented.
+     * This ensures we see all writes to trackedModules[0..count-1] */
+    uint32_t count = atomic_load_explicit(&globalCovFeedback->trackedModuleCount, memory_order_acquire);
+    for (uint32_t i = 0; i < count && i < _HF_MAX_TRACKED_MODULES; i++) {
+        trackedModule_t* mod = &globalCovFeedback->trackedModules[i];
+        if (mod->pathHash == pathHash && mod->guardCount == guardCount && mod->baseGuard > 0) {
+            return mod;
+        }
+    }
+    return NULL;
+}
+
 HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start, uint32_t* stop) {
     guards_initialized = true;
 
@@ -798,7 +852,7 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
     if ((uintptr_t)start == (uintptr_t)stop) {
         return;
     }
-    /* If this module was already initialized, skip it */
+    /* If this module was already initialized (memory still valid), skip it */
     if (*start > 0) {
         LOG_D("Module %p-%p is already initialized", start, stop);
         return;
@@ -806,25 +860,85 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
 
     size_t guardCount = ((uintptr_t)stop - (uintptr_t)start) / sizeof(*start);
     
-    /* Debug output for coverage registration (enable with HFUZZ_COV_DEBUG=1) */
-    if (instrumentCovDebugEnabled()) {
-        /* Try to identify which library this coverage came from */
-        Dl_info info;
-        const char* libName = "unknown";
-        if (dladdr(start, &info) && info.dli_fname) {
-            libName = info.dli_fname;
-        }
-        /* Use the global guard counter from shared memory for accurate total */
-        size_t globalTotal = instrumentReserveGuard(0);
-        fprintf(stderr, "[HFUZZ-COV] PC-Guard: +%zu guards (global total: %zu) from %s\n",
-            guardCount, globalTotal + guardCount, libName);
+    /* Get library path for tracking */
+    Dl_info info;
+    const char* libName = "unknown";
+    if (dladdr(start, &info) && info.dli_fname) {
+        libName = info.dli_fname;
     }
-    LOG_D("PC-Guard module initialization: %p-%p (count:%tu) at %zu", start, stop,
-        guardCount, instrumentReserveGuard(0));
+    uint64_t pathHash = util_hash(libName, strlen(libName));
 
+    /* Quick optimistic check without lock (common case: already registered) */
+    trackedModule_t* existing = findTrackedModule(pathHash, (uint32_t)guardCount);
+    if (existing) {
+        uint32_t guardNo = existing->baseGuard;
+        for (uint32_t* x = start; x < stop; x++) {
+            *x = guardNo++;
+        }
+        LOG_D("Reusing guards for module %s: base=%u count=%u", libName, 
+            existing->baseGuard, existing->guardCount);
+        return;
+    }
+
+    /* Not found - need to register under lock */
+    moduleSpinlockAcquire();
+    
+    /* Double-check: another process might have registered while we waited */
+    existing = findTrackedModule(pathHash, (uint32_t)guardCount);
+    if (existing) {
+        uint32_t guardNo = existing->baseGuard;
+        for (uint32_t* x = start; x < stop; x++) {
+            *x = guardNo++;
+        }
+        moduleSpinlockRelease();
+        LOG_D("Reusing guards for module %s (found under lock): base=%u count=%u", libName, 
+            existing->baseGuard, existing->guardCount);
+        return;
+    }
+    
+    /* Check guard limit before allocating to release lock before potential LOG_F */
+    size_t currentGuards = instrumentReserveGuard(0);
+    if (currentGuards + guardCount >= _HF_PC_GUARD_MAX) {
+        moduleSpinlockRelease();
+        LOG_F("PC-guard limit would be exceeded: current=%zu, requested=%zu, max=%llu",
+              currentGuards, guardCount, _HF_PC_GUARD_MAX);
+    }
+    
+    /* Allocate guards */
+    uint32_t baseGuard = instrumentReserveGuard(guardCount);
+    
+    /* Assign guard numbers to the module's guard array */
+    uint32_t guardNo = baseGuard;
     for (uint32_t* x = start; x < stop; x++) {
-        uint32_t guardNo = instrumentReserveGuard(1);
-        *x               = guardNo;
+        *x = guardNo++;
+    }
+    
+    /* Register in tracking table */
+    uint32_t slot = atomic_load_explicit(&globalCovFeedback->trackedModuleCount, memory_order_relaxed);
+    if (slot < _HF_MAX_TRACKED_MODULES) {
+        /* Write entry data first */
+        globalCovFeedback->trackedModules[slot].pathHash = pathHash;
+        globalCovFeedback->trackedModules[slot].guardCount = (uint32_t)guardCount;
+        globalCovFeedback->trackedModules[slot].baseGuard = baseGuard;
+        /* RELEASE store ensures entry writes are visible before count increment.
+         * This synchronizes with ACQUIRE load in findTrackedModule(). */
+        atomic_store_explicit(&globalCovFeedback->trackedModuleCount, slot + 1, memory_order_release);
+        
+        LOG_I("PC-Guard module registration: %p-%p (count:%zu) at guard %u in slot %u", 
+            start, stop, guardCount, baseGuard, slot);
+    } else {
+        moduleSpinlockRelease();
+        LOG_F("No free tracking slots for module %s (all %u slots in use). "
+              "Increase _HF_MAX_TRACKED_MODULES in honggfuzz.h", 
+              libName, _HF_MAX_TRACKED_MODULES);
+    }
+    
+    moduleSpinlockRelease();
+    
+    if (instrumentCovDebugEnabled()) {
+        size_t globalTotal = instrumentReserveGuard(0);
+        LOG_I("[COV] PC-Guard: +%zu guards (global total: %zu) from %s",
+            guardCount, globalTotal, libName);
     }
 }
 
@@ -984,29 +1098,107 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
     if ((uintptr_t)start == (uintptr_t)end) {
         return;
     }
+    
+    size_t counterCount = (uintptr_t)end - (uintptr_t)start;
+    
+    /* Get library path for tracking */
+    Dl_info info;
+    const char* libName = "unknown";
+    if (dladdr(start, &info) && info.dli_fname) {
+        libName = info.dli_fname;
+    }
+    /* Use different hash space for 8-bit counters vs PC guards to avoid collisions */
+    uint64_t pathHash = util_hash(libName, strlen(libName)) ^ 0x8B178B178B178B17ULL;
+    
+    /* Quick optimistic check without lock (common case: already registered) */
+    trackedModule_t* existing = findTrackedModule(pathHash, (uint32_t)counterCount);
+    if (existing) {
+        /* Reuse existing guard allocation */
+        for (size_t i = 0; i < ARRAYSIZE(hf8bitcounters); i++) {
+            if (hf8bitcounters[i].start == NULL) {
+                hf8bitcounters[i].start = (uint8_t*)start;
+                hf8bitcounters[i].cnt   = counterCount;
+                hf8bitcounters[i].guard = existing->baseGuard;
+                LOG_D("Reusing 8-bit guards for module %s: base=%u count=%u", libName,
+                    existing->baseGuard, existing->guardCount);
+                break;
+            }
+        }
+        return;
+    }
+    
+    /* Not found - need to register under lock */
+    moduleSpinlockAcquire();
+    
+    /* Double-check: another process might have registered while we waited */
+    existing = findTrackedModule(pathHash, (uint32_t)counterCount);
+    if (existing) {
+        for (size_t i = 0; i < ARRAYSIZE(hf8bitcounters); i++) {
+            if (hf8bitcounters[i].start == NULL) {
+                hf8bitcounters[i].start = (uint8_t*)start;
+                hf8bitcounters[i].cnt   = counterCount;
+                hf8bitcounters[i].guard = existing->baseGuard;
+                break;
+            }
+        }
+        moduleSpinlockRelease();
+        LOG_D("Reusing 8-bit guards for module %s (found under lock): base=%u count=%u", libName,
+            existing->baseGuard, existing->guardCount);
+        return;
+    }
+    
+    /* Check guard limit before allocating to release lock before potential LOG_F */
+    size_t currentGuards = instrumentReserveGuard(0);
+    if (currentGuards + counterCount >= _HF_PC_GUARD_MAX) {
+        moduleSpinlockRelease();
+        LOG_F("PC-guard limit would be exceeded (8-bit): current=%zu, requested=%zu, max=%llu",
+              currentGuards, counterCount, _HF_PC_GUARD_MAX);
+    }
+    
+    /* Allocate guards and register in local array */
+    size_t baseGuard = 0;
+    bool foundSlot = false;
     for (size_t i = 0; i < ARRAYSIZE(hf8bitcounters); i++) {
         if (hf8bitcounters[i].start == NULL) {
             hf8bitcounters[i].start = (uint8_t*)start;
-            hf8bitcounters[i].cnt   = (uintptr_t)end - (uintptr_t)start;
-            hf8bitcounters[i].guard = instrumentReserveGuard(hf8bitcounters[i].cnt);
-            
-            /* Debug output for coverage registration (enable with HFUZZ_COV_DEBUG=1) */
-            if (instrumentCovDebugEnabled()) {
-                /* Try to identify which library this coverage came from */
-                Dl_info info;
-                const char* libName = "unknown";
-                if (dladdr(start, &info) && info.dli_fname) {
-                    libName = info.dli_fname;
-                }
-                /* Use the global guard counter from shared memory for accurate total */
-                size_t globalTotal = instrumentReserveGuard(0);
-                fprintf(stderr, "[HFUZZ-COV] 8-bit counters: +%zu guards (global total: %zu) from %s\n",
-                    hf8bitcounters[i].cnt, globalTotal, libName);
-            }
-            LOG_D("8-bit module initialization %p-%p (count:%zu) at guard %zu", start, end,
-                hf8bitcounters[i].cnt, hf8bitcounters[i].guard);
+            hf8bitcounters[i].cnt   = counterCount;
+            hf8bitcounters[i].guard = instrumentReserveGuard(counterCount);
+            baseGuard = hf8bitcounters[i].guard;
+            foundSlot = true;
             break;
         }
+    }
+    
+    if (!foundSlot) {
+        moduleSpinlockRelease();
+        LOG_F("No free local slots for 8-bit counters (all %zu slots in use). "
+              "Increase hf8bitcounters array size in instrument.c",
+              ARRAYSIZE(hf8bitcounters));
+    }
+    
+    /* Register in shared tracking table */
+    uint32_t slot = atomic_load_explicit(&globalCovFeedback->trackedModuleCount, memory_order_relaxed);
+    if (slot < _HF_MAX_TRACKED_MODULES) {
+        globalCovFeedback->trackedModules[slot].pathHash = pathHash;
+        globalCovFeedback->trackedModules[slot].guardCount = (uint32_t)counterCount;
+        globalCovFeedback->trackedModules[slot].baseGuard = (uint32_t)baseGuard;
+        atomic_store_explicit(&globalCovFeedback->trackedModuleCount, slot + 1, memory_order_release);
+        
+        LOG_I("8-bit module registration: %p-%p (count:%zu) at guard %zu in slot %u",
+            start, end, counterCount, baseGuard, slot);
+    } else {
+        moduleSpinlockRelease();
+        LOG_F("No free tracking slots for 8-bit module %s (all %u slots in use). "
+              "Increase _HF_MAX_TRACKED_MODULES in honggfuzz.h",
+              libName, _HF_MAX_TRACKED_MODULES);
+    }
+    
+    moduleSpinlockRelease();
+    
+    if (instrumentCovDebugEnabled()) {
+        size_t globalTotal = instrumentReserveGuard(0);
+        LOG_I("[COV] 8-bit counters: +%zu guards (global total: %zu) from %s",
+            counterCount, globalTotal, libName);
     }
 }
 

@@ -29,6 +29,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/param.h>
@@ -69,7 +70,7 @@
 #define _HF_PERF_BITMAP_SIZE_16M   (1024U * 1024U * 16U)
 #define _HF_PERF_BITMAP_BITSZ_MASK 0x7FFFFFFULL
 /* Maximum number of PC guards (=trace-pc-guard) we support */
-#define _HF_PC_GUARD_MAX (1024ULL * 1024ULL * 64ULL)
+#define _HF_PC_GUARD_MAX (1024ULL * 1024ULL * 128ULL)
 
 /* Maximum size of the input file in bytes (32 MiB) */
 #define _HF_INPUT_MAX_SIZE (1024ULL * 1024ULL * 32ULL)
@@ -164,6 +165,9 @@ struct _dynfile_t {
     uint32_t           selectCnt;   /* Times this input was selected */
     uint32_t           cmpProgress; /* Comparison progress score */
     uint16_t           rareEdgeCnt; /* Count of rare edges this input hits */
+    uint8_t            entropy;     /* Cached entropy score (0-100) */
+    uint64_t           energy;      /* Cached energy value for selection */
+    time_t             energyTime;  /* When energy was last computed */
     fuzzState_t        phase;
     bool               timedout;
     uint8_t*           data;
@@ -196,11 +200,19 @@ typedef struct {
     uint8_t _pad[_HF_CACHE_LINE_SZ - sizeof(bool)];
 } __attribute__((aligned(_HF_CACHE_LINE_SZ))) boolCacheLine_t;
 
+/* Module tracking entry for PC guard leak prevention (in shared memory) */
+#define _HF_MAX_TRACKED_MODULES 4096
+typedef struct {
+    uint64_t pathHash;
+    uint32_t baseGuard;
+    uint32_t guardCount;
+} trackedModule_t;
+
 typedef struct {
     uint8_t  pcGuardMap[_HF_PC_GUARD_MAX];
     uint8_t  bbMapPc[_HF_PERF_BITMAP_SIZE_16M];
     uint32_t bbMapCmp[_HF_PERF_BITMAP_SIZE_16M];
-    uint64_t guardNb;
+    _Atomic uint64_t guardNb;
     /* Per-thread counters - cache-line padded to avoid false sharing */
     cntCacheLine_t  pidNewPC[_HF_THREAD_MAX];
     cntCacheLine_t  pidNewEdge[_HF_THREAD_MAX];
@@ -216,6 +228,10 @@ typedef struct {
     cntCacheLine_t  pidRareEdgeCnt[_HF_THREAD_MAX]; /* Rare edges hit this run */
     /* Global edge frequency tracking - indexed by (guard % size) */
     uint8_t edgeHitCnt[65536];
+    /* Module tracking for PC guard leak prevention - survives across process spawns */
+    _Atomic uint32_t moduleRegistrationLock;  /* Simple spinlock for module registration */
+    _Atomic uint32_t trackedModuleCount;
+    trackedModule_t trackedModules[_HF_MAX_TRACKED_MODULES];
 } feedback_t;
 
 typedef struct {

@@ -379,6 +379,9 @@ void input_addDynamicInput(run_t* run) {
     dynfile->timeExecUSecs = util_timeNowUSecs() - run->timeStartedUSecs;
     dynfile->timeAdded     = now;
     dynfile->data          = (uint8_t*)util_AllocCopy(run->dynfile->data, run->dynfile->size);
+#ifdef HF_USE_ENTROPY_SCHEDULE
+    dynfile->entropy       = power_ComputeEntropy(dynfile->data, dynfile->size);
+#endif
     dynfile->src           = run->dynfile->src;
     dynfile->imported      = run->dynfile->imported;
     dynfile->newEdges      = run->dynfile->newEdges;
@@ -472,6 +475,10 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
     {
         MX_SCOPED_RWLOCK_WRITE(&run->global->mutex.dynfileq);
 
+        unsigned iterations = 0;
+        const unsigned maxIterations = 256; /* Prevent infinite loop spinning */
+        time_t now = time(NULL); /* Get time once outside the loop */
+
         for (;;) {
             if (run->global->io.dynfileqCurrent == NULL) {
                 run->global->io.dynfileqCurrent = TAILQ_FIRST(&run->global->io.dynfileq);
@@ -490,7 +497,21 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                 break;
             }
 
-            uint64_t energy = power_calculateEnergy(run, run->current);
+            /* Force selection after too many iterations to prevent spinning */
+            if (++iterations >= maxIterations) {
+                LOG_W("Selection loop hit iteration cap (%u), forcing selection", maxIterations);
+                break;
+            }
+
+            /* Use cached energy, recompute if stale (>10 seconds old) */
+            uint64_t energy;
+            if (run->current->energy == 0 || (now - run->current->energyTime) > 10) {
+                energy = power_calculateEnergy(run, run->current);
+                run->current->energy = energy;
+                run->current->energyTime = now;
+            } else {
+                energy = run->current->energy;
+            }
 
             /* Lineage bonus: if parent was fertile (produced children), boost siblings */
             if (run->current->src && ATOMIC_GET(run->current->src->refs) > 2) {
@@ -571,6 +592,9 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
     run->dynfile->pathHash      = current_input->pathHash;
     run->dynfile->cmpProgress   = current_input->cmpProgress;
     run->dynfile->rareEdgeCnt   = current_input->rareEdgeCnt;
+#ifdef HF_USE_ENTROPY_SCHEDULE
+    run->dynfile->entropy       = current_input->entropy;
+#endif
     memcpy(run->dynfile->cov, current_input->cov, sizeof(run->dynfile->cov));
     snprintf(run->dynfile->path, sizeof(run->dynfile->path), "%s", current_input->path);
     memcpy(run->dynfile->data, current_input->data, current_input->size);
@@ -883,6 +907,9 @@ bool input_prepareStaticFile(run_t* run, bool rewind, bool needs_mangle) {
     run->dynfile->timeAdded = time(NULL);
     run->dynfile->newEdges  = 0;
     run->dynfile->depth     = 0;
+#ifdef HF_USE_ENTROPY_SCHEDULE
+    run->dynfile->entropy   = power_ComputeEntropy(run->dynfile->data, run->dynfile->size);
+#endif
 
     if (needs_mangle) {
         mangle_mangleContent(run);

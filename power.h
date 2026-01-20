@@ -29,6 +29,9 @@
 /* The baseline energy level. Input with this energy will be fuzzed exactly once. */
 #define POWER_BASE_ENERGY 256
 
+#ifdef HF_USE_ENTROPY_SCHEDULE
+extern unsigned power_ComputeEntropy(const uint8_t* data, size_t len);
+#endif
 extern uint64_t power_calculateEnergy(run_t* run, dynfile_t* dynfile);
 
 #endif /* _HF_POWER_H_ */
