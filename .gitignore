@@ -4,6 +4,7 @@
 *.dSYM
 *.a
 honggfuzz
+git_buildinfo.h
 Makefile.bak
 hfuzz_cc/hfuzz-cc
 mac/mach_exc.h

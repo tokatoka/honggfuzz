@@ -197,6 +197,8 @@ endif
 SRCS := $(COMMON_SRCS) $(ARCH_SRCS)
 OBJS := $(SRCS:.c=.o)
 
+GIT_BUILDINFO_H := git_buildinfo.h
+
 LHFUZZ_SRCS := $(sort $(wildcard libhfuzz/*.c))
 LHFUZZ_OBJS := $(LHFUZZ_SRCS:.c=.o)
 LHFUZZ_ARCH := libhfuzz/libhfuzz.a
@@ -275,9 +277,33 @@ CLEAN_TARGETS := core Makefile.bak \
   $(LHFUZZ_ARCH) $(LHFUZZ_SHARED) $(LHFUZZ_OBJS) \
   $(LCOMMON_ARCH) $(LCOMMON_OBJS) \
   $(LNETDRIVER_ARCH) $(LNETDRIVER_OBJS) \
-  $(MAC_GARGBAGE) $(ANDROID_GARBAGE) $(SUBDIR_GARBAGE)
+  $(MAC_GARGBAGE) $(ANDROID_GARBAGE) $(SUBDIR_GARBAGE) \
+  $(GIT_BUILDINFO_H)
 
-all: $(BIN) $(HFUZZ_CC_BIN) $(LHFUZZ_ARCH) $(LHFUZZ_SHARED) $(LCOMMON_ARCH) $(LNETDRIVER_ARCH)
+all: $(GIT_BUILDINFO_H) $(BIN) $(HFUZZ_CC_BIN) $(LHFUZZ_ARCH) $(LHFUZZ_SHARED) $(LCOMMON_ARCH) $(LNETDRIVER_ARCH)
+
+# Generate git build info header with commit hash, author, and title
+.PHONY: $(GIT_BUILDINFO_H)
+$(GIT_BUILDINFO_H):
+	@echo "Generating $@..."
+	@echo "/* Auto-generated at build time - do not edit */" > $@
+	@echo "#ifndef GIT_BUILDINFO_H" >> $@
+	@echo "#define GIT_BUILDINFO_H" >> $@
+	@echo "" >> $@
+	@GIT_HASH=$$(git rev-parse --short HEAD 2>/dev/null || echo "unknown"); \
+	 GIT_BRANCH=$$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown"); \
+	 GIT_AUTHOR=$$(git log -1 --format='%an' 2>/dev/null || echo "unknown"); \
+	 GIT_TITLE=$$(git log -1 --format='%s' 2>/dev/null | sed 's/"/\\"/g' || echo "unknown"); \
+	 echo "#define GIT_COMMIT_HASH \"$$GIT_HASH\"" >> $@; \
+	 echo "#define GIT_COMMIT_BRANCH \"$$GIT_BRANCH\"" >> $@; \
+	 echo "#define GIT_COMMIT_AUTHOR \"$$GIT_AUTHOR\"" >> $@; \
+	 echo "#define GIT_COMMIT_TITLE \"$$GIT_TITLE\"" >> $@
+	@echo "" >> $@
+	@echo "#endif /* GIT_BUILDINFO_H */" >> $@
+
+# honggfuzz.o depends on the git build info header
+honggfuzz.o: honggfuzz.c $(GIT_BUILDINFO_H)
+	$(CC) -c $(CFLAGS) $(CFLAGS_BLOCKS) -o $@ $<
 
 %.o: %.c
 	$(CC) -c $(CFLAGS) $(CFLAGS_BLOCKS) -o $@ $<
