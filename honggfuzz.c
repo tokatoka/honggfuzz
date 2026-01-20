@@ -43,6 +43,7 @@
 #include "dict.h"
 #include "display.h"
 #include "fuzz.h"
+#include "git_buildinfo.h"
 #include "input.h"
 #include "libhfcommon/common.h"
 #include "libhfcommon/files.h"
@@ -335,6 +336,38 @@ static const char* getGitVersion() {
     return "UNKNOWN";
 }
 
+static const char* getGitCommitHash() {
+#ifdef GIT_COMMIT_HASH
+    return GIT_COMMIT_HASH;
+#else
+    return "unknown";
+#endif
+}
+
+static const char* getGitCommitBranch() {
+#ifdef GIT_COMMIT_BRANCH
+    return GIT_COMMIT_BRANCH;
+#else
+    return "unknown";
+#endif
+}
+
+static const char* getGitCommitAuthor() {
+#ifdef GIT_COMMIT_AUTHOR
+    return GIT_COMMIT_AUTHOR;
+#else
+    return "unknown";
+#endif
+}
+
+static const char* getGitCommitTitle() {
+#ifdef GIT_COMMIT_TITLE
+    return GIT_COMMIT_TITLE;
+#else
+    return "unknown";
+#endif
+}
+
 int main(int argc, char** argv) {
     /*
      * Work around CygWin/MinGW
@@ -373,6 +406,8 @@ int main(int argc, char** argv) {
         strYesNo(hfuzz.exe.fuzzStdin), hfuzz.mutate.mutationsPerRun, (long)hfuzz.timing.tmOut,
         hfuzz.mutate.mutationsMax, hfuzz.threads.threadsMax, strYesNo(hfuzz.cfg.minimize),
         getGitVersion());
+    LOG_I("Build info: commit:%s branch:'%s' author:'%s' title:'%s'",
+        getGitCommitHash(), getGitCommitBranch(), getGitCommitAuthor(), getGitCommitTitle());
 
     sigemptyset(&hfuzz.exe.waitSigSet);
     sigaddset(&hfuzz.exe.waitSigSet, SIGIO);   /* Persistent socket data */
