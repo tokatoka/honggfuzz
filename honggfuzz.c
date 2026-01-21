@@ -202,7 +202,7 @@ static void printSummary(honggfuzz_t* hfuzz) {
     if (elapsed_sec) {
         exec_per_sec = hfuzz->cnts.mutationsCnt / elapsed_sec;
     }
-    uint64_t guardNb = ATOMIC_GET(hfuzz->feedback.covFeedbackMap->guardNb);
+    uint64_t guardNb = atomic_load_explicit(&hfuzz->feedback.covFeedbackMap->guardNb, memory_order_relaxed);
     uint64_t branch_percent_cov =
         guardNb ? ((100 * ATOMIC_GET(hfuzz->feedback.hwCnts.softCntEdge)) / guardNb) : 0;
     struct rusage usage;
