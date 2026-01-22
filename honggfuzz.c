@@ -369,6 +369,9 @@ static const char* getGitCommitTitle() {
 }
 
 int main(int argc, char** argv) {
+    LOG_I("Build info: commit:%s branch:'%s' author:'%s' title:'%s'",
+        getGitCommitHash(), getGitCommitBranch(), getGitCommitAuthor(), getGitCommitTitle());
+
     /*
      * Work around CygWin/MinGW
      */
@@ -406,8 +409,6 @@ int main(int argc, char** argv) {
         strYesNo(hfuzz.exe.fuzzStdin), hfuzz.mutate.mutationsPerRun, (long)hfuzz.timing.tmOut,
         hfuzz.mutate.mutationsMax, hfuzz.threads.threadsMax, strYesNo(hfuzz.cfg.minimize),
         getGitVersion());
-    LOG_I("Build info: commit:%s branch:'%s' author:'%s' title:'%s'",
-        getGitCommitHash(), getGitCommitBranch(), getGitCommitAuthor(), getGitCommitTitle());
 
     sigemptyset(&hfuzz.exe.waitSigSet);
     sigaddset(&hfuzz.exe.waitSigSet, SIGIO);   /* Persistent socket data */
