@@ -62,6 +62,7 @@
 #define ESC_NAV(x, y)           "\033[" #x ";" #y "H"
 #define ESC_BOLD                "\033[1m"
 #define ESC_RED                 "\033[31m"
+#define ESC_GREEN               "\033[32m"
 #define ESC_RESET               "\033[0m"
 #define ESC_SCROLL_REGION(x, y) "\033[" #x ";" #y "r"
 #define ESC_SCROLL_DISABLE      "\033[?7h"
@@ -383,6 +384,18 @@ void display_display(honggfuzz_t* hfuzz) {
         ATOMIC_GET(hfuzz->cnts.verifiedCrashesCnt));
     display_put("    Timeouts : " ESC_BOLD "%" _HF_NONMON_SEP "zu" ESC_RESET " [%lu sec]\n",
         ATOMIC_GET(hfuzz->cnts.timeoutedCnt), (unsigned long)hfuzz->timing.tmOut);
+    
+    /* Differential fuzzing metrics */
+    size_t phase2Fallbacks = ATOMIC_GET(hfuzz->cnts.diffFuzzPhase2Fallbacks);
+    size_t saturated = ATOMIC_GET(hfuzz->cnts.diffFuzzSaturatedLineages);
+    size_t fertile = ATOMIC_GET(hfuzz->cnts.diffFuzzFertileBoosts);
+    if (phase2Fallbacks > 0 || saturated > 0 || fertile > 0) {
+        display_put("   Diff-Fuzz : phase2: " ESC_BOLD "%" _HF_NONMON_SEP "zu" ESC_RESET
+                    ", saturated: %s" ESC_BOLD "%" _HF_NONMON_SEP "zu" ESC_RESET
+                    ", fertile: " ESC_GREEN ESC_BOLD "%" _HF_NONMON_SEP "zu" ESC_RESET "\n",
+            phase2Fallbacks, saturated > 10 ? ESC_RED : "", saturated, fertile);
+    }
+    
     /* Feedback data sources. Common headers. */
     display_put(" Corpus Size : " ESC_BOLD "%" _HF_NONMON_SEP "zu" ESC_RESET ", max: " ESC_BOLD
                 "%" _HF_NONMON_SEP "zu" ESC_RESET " bytes, init: " ESC_BOLD "%" _HF_NONMON_SEP

@@ -165,6 +165,9 @@ struct _dynfile_t {
     uint32_t           selectCnt;   /* Times this input was selected */
     uint32_t           cmpProgress; /* Comparison progress score */
     uint16_t           rareEdgeCnt; /* Count of rare edges this input hits */
+    uint16_t           mismatchRefs; /* Descendants that caused NEW mismatches (diff fuzzing) */
+    uint16_t           dupCrashRefs; /* Descendants that caused DUPLICATE crashes (saturation) */
+    uint8_t            complexity;  /* Input structural complexity score (0-255) */
     uint8_t            entropy;     /* Cached entropy score (0-100) */
     uint64_t           energy;      /* Cached energy value for selection */
     time_t             energyTime;  /* When energy was last computed */
@@ -371,6 +374,11 @@ typedef struct {
         size_t verifiedCrashesCnt;
         size_t blCrashesCnt;
         size_t timeoutedCnt;
+        /* Differential fuzzing metrics */
+        size_t diffFuzzSelectionIters;    /* Total selection loop iterations */
+        size_t diffFuzzPhase2Fallbacks;   /* Times we fell back to phase 2 selection */
+        size_t diffFuzzSaturatedLineages; /* Lineages that became saturated */
+        size_t diffFuzzFertileBoosts;     /* Times we boosted a fertile lineage */
     } cnts;
     struct {
         bool enabled;

@@ -170,8 +170,29 @@ static void arch_analyzeSignal(run_t* run, pid_t pid, int status) {
 
     ATOMIC_POST_INC(run->global->cnts.crashesCnt);
 
+    /* Note: Mismatch lineage tracking moved to after duplicate detection below */
+
     if (files_exists(run->crashFileName)) {
         LOG_I("Crash (dup): '%s' already exists, skipping", run->crashFileName);
+        /*
+         * Duplicate crash saturation for differential fuzzing:
+         * Penalize ancestors that keep producing the same crash.
+         */
+        if (run->dynfile && run->dynfile->src) {
+            dynfile_t* ancestor = run->dynfile->src;
+            uint16_t parentDupRefs = ATOMIC_GET(ancestor->dupCrashRefs);
+            unsigned depth = 0;
+            while (ancestor != NULL && depth < 4) {
+                ATOMIC_POST_INC(ancestor->dupCrashRefs);
+                ancestor = ancestor->src;
+                depth++;
+            }
+            /* Log when a lineage crosses saturation threshold (infrequent) */
+            if (parentDupRefs == 7 || parentDupRefs == 15 || parentDupRefs == 31) {
+                LOG_W("[DIFF-FUZZ] Lineage saturation: idx=%zu now has %u duplicate crashes",
+                      run->dynfile->src->idx, parentDupRefs + 1);
+            }
+        }
         /* Clear filename so that verifier can understand we hit a duplicate */
         memset(run->crashFileName, 0, sizeof(run->crashFileName));
         return;
@@ -182,6 +203,23 @@ static void arch_analyzeSignal(run_t* run, pid_t pid, int status) {
     ATOMIC_POST_INC(run->global->cnts.uniqueCrashesCnt);
     /* If unique crash found, reset dynFile counter */
     ATOMIC_CLEAR(run->global->cfg.dynFileIterExpire);
+
+    /*
+     * Mismatch lineage tracking for differential fuzzing:
+     * ONLY boost ancestors for NEW UNIQUE crashes/mismatches.
+     * This prevents the feedback loop of repeatedly finding the same mismatch.
+     */
+    if (run->dynfile && run->dynfile->src) {
+        LOG_I("[DIFF-FUZZ] New unique mismatch! Boosting lineage from idx=%zu (total unique: %zu)",
+              run->dynfile->src->idx, ATOMIC_GET(run->global->cnts.uniqueCrashesCnt));
+        dynfile_t* ancestor = run->dynfile->src;
+        unsigned depth = 0;
+        while (ancestor != NULL && depth < 8) {
+            ATOMIC_POST_INC(ancestor->mismatchRefs);
+            ancestor = ancestor->src;
+            depth++;
+        }
+    }
 
     if (!files_writeBufToFile(run->crashFileName, run->dynfile->data, run->dynfile->size,
             O_CREAT | O_EXCL | O_WRONLY)) {

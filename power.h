@@ -29,6 +29,9 @@
 /* The baseline energy level. Input with this energy will be fuzzed exactly once. */
 #define POWER_BASE_ENERGY 256
 
+/* Compute structural complexity for differential fuzzing (0-255) */
+extern unsigned power_ComputeComplexity(const uint8_t* data, size_t len);
+
 #ifdef HF_USE_ENTROPY_SCHEDULE
 extern unsigned power_ComputeEntropy(const uint8_t* data, size_t len);
 #endif

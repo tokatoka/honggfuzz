@@ -382,6 +382,7 @@ void input_addDynamicInput(run_t* run) {
 #ifdef HF_USE_ENTROPY_SCHEDULE
     dynfile->entropy       = power_ComputeEntropy(dynfile->data, dynfile->size);
 #endif
+    dynfile->complexity    = power_ComputeComplexity(dynfile->data, dynfile->size);
     dynfile->src           = run->dynfile->src;
     dynfile->imported      = run->dynfile->imported;
     dynfile->newEdges      = run->dynfile->newEdges;
@@ -473,70 +474,213 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
     bool       is_imported   = false;
 
     {
-        MX_SCOPED_RWLOCK_WRITE(&run->global->mutex.dynfileq);
+        honggfuzz_t* hfuzz = run->global;  /* Cache global pointer */
+        MX_SCOPED_RWLOCK_WRITE(&hfuzz->mutex.dynfileq);
 
+        /*
+         * Two-phase selection to avoid spinning when all inputs have low energy:
+         * Phase 1 (iterations 0-31): Try probabilistic selection as normal
+         * Phase 2 (iterations 32+): Track top candidates, select randomly weighted by energy
+         *
+         * This maintains power scheduling benefits while guaranteeing fast selection
+         * with randomness to avoid doom loops.
+         */
         unsigned iterations = 0;
-        const unsigned maxIterations = 256; /* Prevent infinite loop spinning */
-        time_t now = time(NULL); /* Get time once outside the loop */
+        const unsigned phase1Limit = 32;   /* Try probabilistic selection */
+        const unsigned phase2Limit = 32;   /* After phase1, scan for top candidates */
+        time_t now = time(NULL);
+
+        /* Instrumentation: selection statistics (sampled every 10000 selections) */
+        static _Atomic uint64_t selectionCount = 0;
+        static _Atomic uint64_t phase1HighEnergy = 0;   /* Selected via high energy in phase 1 */
+        static _Atomic uint64_t phase1LowEnergy = 0;    /* Selected via probabilistic skip in phase 1 */
+        static _Atomic uint64_t phase1Repeat = 0;       /* Selected via triesLeft repeat */
+        static _Atomic uint64_t phase2Fallback = 0;     /* Selected via phase 2 fallback */
+        static _Atomic uint64_t totalEnergySum = 0;     /* Sum of selected energies (for avg) */
+        static _Atomic uint64_t totalIterations = 0;    /* Sum of iterations (for avg) */
+        static _Atomic uint64_t maxIterationsSeen = 0;  /* Max iterations in any selection */
+        static _Atomic uint64_t lastLogTime = 0;
+
+        /* Track top candidates for weighted random selection in fallback */
+        #define TOP_CANDIDATES 16
+        dynfile_t* topCandidates[TOP_CANDIDATES] = {NULL};
+        uint64_t   topEnergies[TOP_CANDIDATES]   = {0};
 
         for (;;) {
-            if (run->global->io.dynfileqCurrent == NULL) {
-                run->global->io.dynfileqCurrent = TAILQ_FIRST(&run->global->io.dynfileq);
+            /* Cache the current pointer to avoid repeated global dereferences */
+            dynfile_t* cur = hfuzz->io.dynfileqCurrent;
+            
+            if (unlikely(cur == NULL)) {
+                cur = TAILQ_FIRST(&hfuzz->io.dynfileq);
+                hfuzz->io.dynfileqCurrent = cur;
             }
 
-            if (run->triesLeft) {
+            /* Fast path: repeating a high-energy input */
+            if (likely(run->triesLeft)) {
                 run->triesLeft--;
+                ATOMIC_POST_INC(phase1Repeat);
                 break;
             }
 
-            run->current                    = run->global->io.dynfileqCurrent;
-            run->global->io.dynfileqCurrent = TAILQ_NEXT(run->global->io.dynfileqCurrent, pointers);
+            run->current = cur;
+            /* Prefetch next entry while processing current (hide memory latency) */
+            dynfile_t* next = TAILQ_NEXT(cur, pointers);
+            __builtin_prefetch(next, 0, 1);  /* Read, low temporal locality */
+            hfuzz->io.dynfileqCurrent = next;
 
-            /* Do not count skip_factor on unmeasured (imported) inputs */
-            if (run->current->imported) {
+            /* Imported inputs bypass energy calculation - rare */
+            if (unlikely(cur->imported)) {
                 break;
             }
 
-            /* Force selection after too many iterations to prevent spinning */
-            if (++iterations >= maxIterations) {
-                LOG_W("Selection loop hit iteration cap (%u), forcing selection", maxIterations);
-                break;
-            }
+            iterations++;
 
-            /* Use cached energy, recompute if stale (>10 seconds old) */
+            /* Use cached energy, recompute if stale (>60 seconds old) */
             uint64_t energy;
-            if (run->current->energy == 0 || (now - run->current->energyTime) > 10) {
-                energy = power_calculateEnergy(run, run->current);
-                run->current->energy = energy;
-                run->current->energyTime = now;
+            time_t energyAge = now - cur->energyTime;
+            if (likely(cur->energy != 0 && energyAge <= 60)) {
+                energy = cur->energy;  /* Fast path: use cached energy */
             } else {
-                energy = run->current->energy;
+                energy = power_calculateEnergy(run, cur);
+                cur->energy = energy;
+                cur->energyTime = now;
             }
 
             /* Lineage bonus: if parent was fertile (produced children), boost siblings */
-            if (run->current->src && ATOMIC_GET(run->current->src->refs) > 2) {
-                energy = (energy * 5) / 4; /* 25% bonus for fertile lineage */
+            dynfile_t* src = cur->src;
+            if (unlikely(src != NULL && ATOMIC_GET(src->refs) > 2)) {
+                energy = (energy * 5) >> 2; /* 25% bonus (5/4 = 1.25x) via shift */
             }
 
-            /* High energy - repeat this input */
-            if (energy >= POWER_BASE_ENERGY) {
-                run->triesLeft = energy / POWER_BASE_ENERGY;
-                /* Cap the number of repeats to 256 */
-                if (run->triesLeft > 256) {
+            /* High energy - repeat this input (common success case) */
+            if (likely(energy >= POWER_BASE_ENERGY)) {
+                run->triesLeft = energy >> 8;  /* POWER_BASE_ENERGY = 256 = 2^8 */
+                if (unlikely(run->triesLeft > 256)) {
                     run->triesLeft = 256;
+                }
+                ATOMIC_POST_INC(phase1HighEnergy);
+                ATOMIC_POST_ADD(totalEnergySum, energy);
+                ATOMIC_POST_ADD(totalIterations, iterations);
+                if (unlikely(iterations > ATOMIC_GET(maxIterationsSeen))) {
+                    ATOMIC_SET(maxIterationsSeen, iterations);
                 }
                 break;
             }
 
-            /* Low energy - probabilistic skipping */
-            uint64_t skip_factor = POWER_BASE_ENERGY / energy;
-            /* Cap the skip factor to 64 (1 in 64 chance) */
-            if (skip_factor > 64) {
-                skip_factor = 64;
+            /* Phase 2: After phase1Limit iterations, select from top candidates */
+            if (unlikely(iterations >= phase1Limit)) {
+                /* Track top candidates only in phase 2 (avoid overhead in phase 1) */
+                if (energy > topEnergies[TOP_CANDIDATES - 1]) {
+                    for (unsigned i = 0; i < TOP_CANDIDATES; i++) {
+                        if (energy > topEnergies[i]) {
+                            for (unsigned j = TOP_CANDIDATES - 1; j > i; j--) {
+                                topCandidates[j] = topCandidates[j - 1];
+                                topEnergies[j]   = topEnergies[j - 1];
+                            }
+                            topCandidates[i] = cur;
+                            topEnergies[i]   = energy;
+                            break;
+                        }
+                    }
+                }
+
+                if (iterations >= phase1Limit + phase2Limit && topCandidates[0] != NULL) {
+                    /* Track phase 2 fallbacks for metrics */
+                    uint64_t fallbackCnt = ATOMIC_POST_INC(hfuzz->cnts.diffFuzzPhase2Fallbacks);
+                    
+                    /* Rate-limited warning: log first occurrence and then every 1000th */
+                    if (unlikely(fallbackCnt == 0 || (fallbackCnt % 1000) == 0)) {
+                        LOG_W("Phase 2 fallback triggered (iteration %u, count=%zu, top_energy=%zu)",
+                              iterations, (size_t)fallbackCnt + 1, (size_t)topEnergies[0]);
+                    }
+                    
+                    /* Weighted random selection from top candidates */
+                    uint64_t totalEnergy = 0;
+                    unsigned validCount  = 0;
+                    for (unsigned i = 0; i < TOP_CANDIDATES && topCandidates[i] != NULL; i++) {
+                        totalEnergy += topEnergies[i];
+                        validCount++;
+                    }
+
+                    if (likely(validCount > 1 && totalEnergy > 0)) {
+                        /* Pick randomly weighted by energy */
+                        uint64_t pick = util_rnd64() % totalEnergy;
+                        uint64_t cumulative = 0;
+                        for (unsigned i = 0; i < validCount; i++) {
+                            cumulative += topEnergies[i];
+                            if (pick < cumulative) {
+                                run->current = topCandidates[i];
+                                break;
+                            }
+                        }
+                    } else {
+                        run->current = topCandidates[0];
+                    }
+                    ATOMIC_POST_INC(phase2Fallback);
+                    ATOMIC_POST_ADD(totalEnergySum, topEnergies[0]);
+                    ATOMIC_POST_ADD(totalIterations, iterations);
+                    if (unlikely(iterations > ATOMIC_GET(maxIterationsSeen))) {
+                        ATOMIC_SET(maxIterationsSeen, iterations);
+                    }
+                    break;
+                }
+                /* In phase 2, keep scanning for better candidates without probabilistic rejection */
+                continue;
             }
 
-            if ((util_rnd64() % skip_factor) == 0) {
-                break;
+            /* Phase 1: Low energy, probabilistic skipping */
+            uint64_t skip_factor = POWER_BASE_ENERGY / energy;
+            /* Cap and round to power of 2 for bitmask (1,2,4,8) */
+            if (likely(skip_factor >= 8)) {
+                skip_factor = 8;  /* 12.5% chance to select */
+            } else if (skip_factor >= 4) {
+                skip_factor = 4;
+            } else if (skip_factor >= 2) {
+                skip_factor = 2;
+            } else {
+                skip_factor = 1;
+            }
+
+            /* Use bitmask instead of modulo (skip_factor is power of 2) */
+            if (unlikely((util_rnd64() & (skip_factor - 1)) == 0)) {
+                ATOMIC_POST_INC(phase1LowEnergy);
+                ATOMIC_POST_ADD(totalEnergySum, energy);
+                ATOMIC_POST_ADD(totalIterations, iterations);
+                if (unlikely(iterations > ATOMIC_GET(maxIterationsSeen))) {
+                    ATOMIC_SET(maxIterationsSeen, iterations);
+                }
+                break;  /* Usually skip_factor=8, so 87.5% chance to continue */
+            }
+        }
+        #undef TOP_CANDIDATES
+
+        /* Instrumentation: log selection stats every 30 seconds */
+        uint64_t count = ATOMIC_POST_INC(selectionCount);
+        if ((count & 0xFFFF) == 0) {  /* Check every 65536 selections */
+            time_t logNow = time(NULL);
+            time_t lastLog = ATOMIC_GET(lastLogTime);
+            if (logNow - lastLog >= 30) {
+                ATOMIC_SET(lastLogTime, logNow);
+                uint64_t repeat = ATOMIC_GET(phase1Repeat);
+                uint64_t high = ATOMIC_GET(phase1HighEnergy);
+                uint64_t low = ATOMIC_GET(phase1LowEnergy);
+                uint64_t p2 = ATOMIC_GET(phase2Fallback);
+                uint64_t esum = ATOMIC_GET(totalEnergySum);
+                uint64_t total = repeat + high + low + p2;
+                if (total > 0) {
+                    uint64_t iters = ATOMIC_GET(totalIterations);
+                    uint64_t maxIters = ATOMIC_GET(maxIterationsSeen);
+                    uint64_t nonRepeat = high + low + p2;
+                    LOG_I("[SCHED-STATS] total=%zu repeat=%.1f%% high=%.1f%% low=%.1f%% phase2=%.1f%% avg_energy=%zu avg_iters=%.1f max_iters=%zu",
+                          (size_t)total,
+                          (double)repeat * 100.0 / total,
+                          (double)high * 100.0 / total,
+                          (double)low * 100.0 / total,
+                          (double)p2 * 100.0 / total,
+                          nonRepeat > 0 ? (size_t)(esum / nonRepeat) : 0,
+                          nonRepeat > 0 ? (double)iters / nonRepeat : 0.0,
+                          (size_t)maxIters);
+                }
             }
         }
 
@@ -910,6 +1054,7 @@ bool input_prepareStaticFile(run_t* run, bool rewind, bool needs_mangle) {
 #ifdef HF_USE_ENTROPY_SCHEDULE
     run->dynfile->entropy   = power_ComputeEntropy(run->dynfile->data, run->dynfile->size);
 #endif
+    run->dynfile->complexity = power_ComputeComplexity(run->dynfile->data, run->dynfile->size);
 
     if (needs_mangle) {
         mangle_mangleContent(run);
