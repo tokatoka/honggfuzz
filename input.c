@@ -491,15 +491,15 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
         time_t now = time(NULL);
 
         /* Instrumentation: selection statistics (sampled every 10000 selections) */
-        static _Atomic uint64_t selectionCount = 0;
-        static _Atomic uint64_t phase1HighEnergy = 0;   /* Selected via high energy in phase 1 */
-        static _Atomic uint64_t phase1LowEnergy = 0;    /* Selected via probabilistic skip in phase 1 */
-        static _Atomic uint64_t phase1Repeat = 0;       /* Selected via triesLeft repeat */
-        static _Atomic uint64_t phase2Fallback = 0;     /* Selected via phase 2 fallback */
-        static _Atomic uint64_t totalEnergySum = 0;     /* Sum of selected energies (for avg) */
-        static _Atomic uint64_t totalIterations = 0;    /* Sum of iterations (for avg) */
-        static _Atomic uint64_t maxIterationsSeen = 0;  /* Max iterations in any selection */
-        static _Atomic uint64_t lastLogTime = 0;
+        static uint64_t selectionCount = 0;
+        static uint64_t phase1HighEnergy = 0;   /* Selected via high energy in phase 1 */
+        static uint64_t phase1LowEnergy = 0;    /* Selected via probabilistic skip in phase 1 */
+        static uint64_t phase1Repeat = 0;       /* Selected via triesLeft repeat */
+        static uint64_t phase2Fallback = 0;     /* Selected via phase 2 fallback */
+        static uint64_t totalEnergySum = 0;     /* Sum of selected energies (for avg) */
+        static uint64_t totalIterations = 0;    /* Sum of iterations (for avg) */
+        static uint64_t maxIterationsSeen = 0;  /* Max iterations in any selection */
+        static uint64_t lastLogTime = 0;
 
         /* Track top candidates for weighted random selection in fallback */
         #define TOP_CANDIDATES 16
