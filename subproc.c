@@ -44,6 +44,7 @@
 #include "libhfcommon/files.h"
 #include "libhfcommon/log.h"
 #include "libhfcommon/util.h"
+#include "hfuzz_metrics.h"
 
 extern char** environ;
 
@@ -540,6 +541,34 @@ void subproc_checkTimeLimit(run_t* run) {
             kill(run->pid, SIGKILL);
         }
         ATOMIC_POST_INC(run->global->cnts.timeoutedCnt);
+
+        /* Log hang metrics (optional - weak symbol, no-op if not overridden) */
+        hfuzz_metrics_log_hang(run->dynfile->size, 
+                                (uint64_t)(run->global->timing.tmOut * 1000));
+
+        /* Save the timeout input as a bug artifact */
+        if (run->dynfile && run->dynfile->data && run->dynfile->size > 0) {
+            char timeoutFileName[PATH_MAX];
+            uint64_t inputHash = util_hash((const char*)run->dynfile->data, run->dynfile->size);
+            
+            /* Use unique filename: TIMEOUT.SIZE.HASH.fuzz */
+            snprintf(timeoutFileName, sizeof(timeoutFileName),
+                "%s/TIMEOUT.%zu.%" PRIx64 ".%s",
+                run->global->io.crashDir, run->dynfile->size, inputHash,
+                run->global->io.fileExtn);
+            
+            /* Only save if file doesn't already exist (deduplication by hash) */
+            if (!files_exists(timeoutFileName)) {
+                if (files_writeBufToFile(timeoutFileName, run->dynfile->data, run->dynfile->size,
+                        O_CREAT | O_EXCL | O_WRONLY)) {
+                    LOG_I("Timeout: saved as '%s'", timeoutFileName);
+                } else {
+                    LOG_W("Couldn't save timeout input to '%s'", timeoutFileName);
+                }
+            } else {
+                LOG_D("Timeout (dup): '%s' already exists, skipping", timeoutFileName);
+            }
+        }
     }
 }
 

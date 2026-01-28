@@ -434,10 +434,10 @@ dict.o: dict.h honggfuzz.h libhfcommon/util.h libhfcommon/common.h
 dict.o: libhfcommon/log.h
 display.o: display.h honggfuzz.h libhfcommon/util.h libhfcommon/common.h
 display.o: libhfcommon/log.h
-fuzz.o: fuzz.h arch.h honggfuzz.h libhfcommon/util.h input.h
+fuzz.o: fuzz.h arch.h honggfuzz.h libhfcommon/util.h input.h hfuzz_metrics.h
 fuzz.o: libhfcommon/common.h libhfcommon/files.h libhfcommon/common.h
 fuzz.o: libhfcommon/log.h report.h sanitizers.h socketfuzzer.h subproc.h
-honggfuzz.o: cmdline.h honggfuzz.h libhfcommon/util.h dict.h display.h fuzz.h
+honggfuzz.o: cmdline.h honggfuzz.h libhfcommon/util.h dict.h display.h fuzz.h hfuzz_metrics.h
 honggfuzz.o: input.h libhfcommon/common.h libhfcommon/files.h
 honggfuzz.o: libhfcommon/common.h libhfcommon/log.h socketfuzzer.h subproc.h
 input.o: input.h honggfuzz.h libhfcommon/util.h dict.h fuzz.h
@@ -453,7 +453,7 @@ sanitizers.o: libhfcommon/common.h libhfcommon/log.h
 socketfuzzer.o: socketfuzzer.h honggfuzz.h libhfcommon/util.h
 socketfuzzer.o: libhfcommon/common.h libhfcommon/files.h libhfcommon/common.h
 socketfuzzer.o: libhfcommon/log.h libhfcommon/ns.h
-subproc.o: subproc.h honggfuzz.h libhfcommon/util.h arch.h fuzz.h
+subproc.o: subproc.h honggfuzz.h libhfcommon/util.h arch.h fuzz.h hfuzz_metrics.h
 subproc.o: libhfcommon/common.h libhfcommon/files.h libhfcommon/common.h
 subproc.o: libhfcommon/log.h
 hfuzz_cc/hfuzz-cc.o: honggfuzz.h libhfcommon/util.h libhfcommon/common.h
@@ -472,7 +472,7 @@ libhfnetdriver/netdriver.o: libhfcommon/files.h libhfcommon/common.h
 libhfnetdriver/netdriver.o: libhfcommon/log.h libhfcommon/ns.h
 libhfuzz/fetch.o: libhfuzz/fetch.h honggfuzz.h libhfcommon/util.h
 libhfuzz/fetch.o: libhfcommon/files.h libhfcommon/common.h libhfcommon/log.h
-libhfuzz/instrument.o: libhfuzz/instrument.h honggfuzz.h libhfcommon/util.h
+libhfuzz/instrument.o: libhfuzz/instrument.h honggfuzz.h libhfcommon/util.h hfuzz_metrics.h
 libhfuzz/instrument.o: libhfcommon/common.h libhfcommon/files.h
 libhfuzz/instrument.o: libhfcommon/common.h libhfcommon/log.h
 libhfuzz/linux.o: libhfcommon/common.h libhfcommon/files.h
@@ -499,7 +499,7 @@ linux/perf.o: libhfcommon/common.h libhfcommon/files.h libhfcommon/common.h
 linux/perf.o: libhfcommon/log.h linux/pt.h
 linux/pt.o: linux/pt.h honggfuzz.h libhfcommon/util.h libhfcommon/common.h
 linux/pt.o: libhfcommon/log.h
-linux/trace.o: linux/trace.h honggfuzz.h libhfcommon/util.h
+linux/trace.o: linux/trace.h honggfuzz.h libhfcommon/util.h hfuzz_metrics.h
 linux/trace.o: libhfcommon/common.h libhfcommon/files.h libhfcommon/common.h
 linux/trace.o: libhfcommon/log.h linux/bfd.h linux/unwind.h sanitizers.h
 linux/trace.o: report.h socketfuzzer.h subproc.h
@@ -520,3 +520,4 @@ netbsd/unwind.o: libhfcommon/common.h libhfcommon/log.h
 posix/arch.o: arch.h honggfuzz.h libhfcommon/util.h fuzz.h
 posix/arch.o: libhfcommon/common.h libhfcommon/files.h libhfcommon/common.h
 posix/arch.o: libhfcommon/log.h report.h sanitizers.h subproc.h
+hfuzz_metrics.o: hfuzz_metrics.h libhfcommon/common.h

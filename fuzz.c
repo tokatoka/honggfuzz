@@ -49,6 +49,7 @@
 #include "sanitizers.h"
 #include "socketfuzzer.h"
 #include "subproc.h"
+#include "hfuzz_metrics.h"
 
 static time_t termTimeStamp = 0;
 
@@ -328,6 +329,22 @@ static void fuzz_perfFeedback(run_t* run) {
             LOG_D("SocketFuzzer: fuzz: new BB (perf)");
             fuzz_notifySocketFuzzerNewCov(run->global);
         }
+
+        /* Log coverage metrics (optional - weak symbol, no-op if not overridden) */
+        hfuzz_metrics_log_coverage(
+            softNewPC,
+            softNewEdge,
+            softNewCmp,
+            run->global->feedback.hwCnts.softCntPc,
+            run->global->feedback.hwCnts.softCntEdge,
+            run->global->feedback.hwCnts.softCntCmp,
+            run->global->io.dynfileqCnt);
+        
+        /* Log detailed coverage map for source-level analysis */
+        uint64_t total_guards = atomic_load_explicit(&run->global->feedback.covFeedbackMap->guardNb, memory_order_relaxed);
+        hfuzz_metrics_log_detailed_coverage(
+            run->global->feedback.covFeedbackMap->pcGuardMap,
+            total_guards);
     } else if (run->dynfile->imported) {
         /* Remove useless imported inputs from corpus */
         LOG_D("Removing useless imported file: %s", run->dynfile->path);
@@ -501,6 +518,12 @@ static void fuzz_fuzzLoop(run_t* run) {
     }
     if (!subproc_Run(run)) {
         LOG_F("Couldn't run fuzzed command");
+    }
+
+    /* Log execution metrics (optional - weak symbol, no-op if not overridden) */
+    {
+        uint64_t exec_time_us = util_timeNowUSecs() - run->timeStartedUSecs;
+        hfuzz_metrics_log_execution(run->dynfile->size, exec_time_us);
     }
 
     if (run->global->feedback.dynFileMethod != _HF_DYNFILE_NONE) {

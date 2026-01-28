@@ -58,6 +58,7 @@
 #include "linux/unwind.h"
 #include "report.h"
 #include "sanitizers.h"
+#include "hfuzz_metrics.h"
 #include "socketfuzzer.h"
 #include "subproc.h"
 
@@ -787,6 +788,9 @@ static void arch_traceSaveData(run_t* run, pid_t pid) {
 
     /* Increase global crashes counter */
     ATOMIC_POST_INC(run->global->cnts.crashesCnt);
+
+    /* Log crash metrics (optional - weak symbol, no-op if not overridden) */
+    hfuzz_metrics_log_crash(description, run->backtrace, run->dynfile->size);
 
     /*
      * Check if backtrace contains allowlisted symbol. Whitelist overrides

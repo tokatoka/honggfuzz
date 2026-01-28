@@ -25,6 +25,7 @@
 #include "libhfcommon/files.h"
 #include "libhfcommon/log.h"
 #include "libhfcommon/util.h"
+#include "hfuzz_metrics.h"
 
 /* Cygwin doesn't support this */
 #if !defined(__CYGWIN__)
@@ -926,6 +927,9 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
         
         LOG_I("PC-Guard module registration: %p-%p (count:%zu) at guard %u in slot %u", 
             start, stop, guardCount, baseGuard, slot);
+        
+        /* Notify metrics of new module (optional - weak symbol, no-op if not overridden) */
+        hfuzz_metrics_register_module(libName, baseGuard, (uint32_t)guardCount);
     } else {
         moduleSpinlockRelease();
         LOG_F("No free tracking slots for module %s (all %u slots in use). "
@@ -1202,9 +1206,50 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
     }
 }
 
-/* Not implemented yet */
-void __sanitizer_cov_pcs_init(
-    const uintptr_t* pcs_beg HF_ATTR_UNUSED, const uintptr_t* pcs_end HF_ATTR_UNUSED) {
+/*
+ * Receive PC table from instrumentation.
+ * Each entry is a pair of (PC address, flags) where flags indicates function entry.
+ * This is called after __sanitizer_cov_trace_pc_guard_init for each module.
+ */
+void __sanitizer_cov_pcs_init(const uintptr_t* pcs_beg, const uintptr_t* pcs_end) {
+    if (pcs_beg >= pcs_end) {
+        return;
+    }
+    
+    /* Calculate number of PC entries (each entry is 2 uintptrs: PC + flags) */
+    size_t pc_count = (pcs_end - pcs_beg) / 2;
+    if (pc_count == 0) {
+        return;
+    }
+    
+    /* Get module name for this PC table */
+    Dl_info info;
+    const char* libName = "unknown";
+    if (dladdr((void*)pcs_beg, &info) && info.dli_fname) {
+        libName = info.dli_fname;
+    }
+    
+    /* Find the matching module registration to get the guard_start.
+     * The PC count should match the guard count for the module. */
+    uint32_t guard_start = 0;
+    uint64_t pathHash = util_hash(libName, strlen(libName));
+    
+    /* Search for a module with matching path hash and guard count */
+    uint32_t moduleCount = atomic_load_explicit(
+        &globalCovFeedback->trackedModuleCount, memory_order_acquire);
+    for (uint32_t i = 0; i < moduleCount && i < _HF_MAX_TRACKED_MODULES; i++) {
+        if (globalCovFeedback->trackedModules[i].pathHash == pathHash &&
+            globalCovFeedback->trackedModules[i].guardCount == (uint32_t)pc_count) {
+            guard_start = globalCovFeedback->trackedModules[i].baseGuard;
+            break;
+        }
+    }
+    
+    LOG_D("PC table init: %s with %zu PCs at guard_start=%u", libName, pc_count, guard_start);
+    
+    /* Notify metrics of the PC table (optional - weak symbol, no-op if not overridden) */
+    hfuzz_metrics_register_pc_table(libName, (const hfuzz_pc_entry_t*)pcs_beg, 
+                                     pc_count, guard_start);
 }
 
 unsigned instrumentThreadNo(void) {
