@@ -687,6 +687,12 @@ static void* fuzz_threadNew(void* arg) {
 }
 
 void fuzz_threadsStart(honggfuzz_t* hfuzz) {
+    /* Re-init the dynfileq rwlock at runtime as a workaround for:
+       https://sourceware.org/bugzilla/show_bug.cgi?id=23844 */
+    if (pthread_rwlock_init(&hfuzz->mutex.dynfileq, NULL) != 0) {
+        PLOG_F("pthread_rwlock_init(dynfileq)");
+    }
+
     if (!arch_archInit(hfuzz)) {
         LOG_F("Couldn't prepare arch for fuzzing");
     }
@@ -711,5 +717,9 @@ void fuzz_threadsStart(honggfuzz_t* hfuzz) {
                 hfuzz, &hfuzz->threads.threads[i], fuzz_threadNew, /* joinable= */ true)) {
             PLOG_F("Couldn't run a thread #%zu", i);
         }
+        /* Stagger thread creation to avoid thundering-herd contention on the
+           dynfileq rwlock exacerbating
+           https://sourceware.org/bugzilla/show_bug.cgi?id=23844 */
+        usleep(1000);
     }
 }
