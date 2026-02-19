@@ -236,6 +236,7 @@ static bool arch_checkWait(run_t* run) {
                 if (!fuzz_isTerminating()) {
                     LOG_W("Persistent mode: pid=%d exited with status: %s", (int)run->pid,
                         subproc_StatusToStr(status));
+                    ATOMIC_POST_INC(run->global->cnts.persistentResets);
                 }
             }
             return true;

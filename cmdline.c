@@ -388,6 +388,7 @@ bool cmdlineParse(int argc, char* argv[], honggfuzz_t* hfuzz) {
                 .dynFileIterExpire = 0,
                 .only_printable    = false,
                 .minimize          = false,
+                .replay            = false,
                 .switchingToFDM    = false,
             },
         .sanitizer =
@@ -409,12 +410,14 @@ bool cmdlineParse(int argc, char* argv[], honggfuzz_t* hfuzz) {
                 .state                 = _HF_STATE_UNSET,
                 .hwCnts =
                     {
-                        .cpuInstrCnt  = 0ULL,
-                        .cpuBranchCnt = 0ULL,
-                        .bbCnt        = 0ULL,
-                        .newBBCnt     = 0ULL,
-                        .softCntPc    = 0ULL,
-                        .softCntCmp   = 0ULL,
+                        .cpuInstrCnt       = 0ULL,
+                        .cpuBranchCnt      = 0ULL,
+                        .bbCnt             = 0ULL,
+                        .newBBCnt          = 0ULL,
+                        .softCntPc         = 0ULL,
+                        .softCntEdge       = 0ULL,
+                        .softCntCmp        = 0ULL,
+                        .softCntEdgeBucket = 0ULL,
                     },
             },
         .cnts =
@@ -483,6 +486,7 @@ bool cmdlineParse(int argc, char* argv[], honggfuzz_t* hfuzz) {
         { { "persistent", no_argument, NULL, 'P' }, "Enable persistent fuzzing (use hfuzz_cc/hfuzz-clang to compile code). This will be auto-detected!!!" },
         { { "instrument", no_argument, NULL, 'z' }, "*DEFAULT-MODE-BY-DEFAULT* Enable compile-time instrumentation (use hfuzz_cc/hfuzz-clang to compile code)" },
         { { "minimize", no_argument, NULL, 'M' }, "Minimize the input corpus. It will most likely delete some corpus files (from the --input directory) if no --output is used!" },
+        { { "replay", no_argument, NULL, 0x120 }, "Replay all corpus files without mutation. Process each input once with N threads and exit. Useful for collecting llvm-cov profraw data." },
         { { "noinst", no_argument, NULL, 'x' }, "Static mode only, disable any instrumentation (hw/sw) feedback" },
         { { "keep_output", no_argument, NULL, 'Q' }, "Don't close children's stdin, stdout, stderr; can be noisy" },
         { { "timeout", required_argument, NULL, 't' }, "Timeout in seconds (default: 1 (second))" },
@@ -669,6 +673,9 @@ bool cmdlineParse(int argc, char* argv[], honggfuzz_t* hfuzz) {
             break;
         case 'M':
             hfuzz->cfg.minimize = true;
+            break;
+        case 0x120:
+            hfuzz->cfg.replay = true;
             break;
         case 'F':
             hfuzz->io.maxFileSz = strtoul(optarg, NULL, 0);

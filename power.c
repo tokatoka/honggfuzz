@@ -234,6 +234,10 @@ uint64_t power_calculateEnergy(run_t* run, dynfile_t* dynfile) {
         if (likely(boost > decay)) {
             energy <<= (boost - decay);
         }
+        /* Track when novelty decay reduces the boost */
+        if (unlikely(decay > 0)) {
+            ATOMIC_POST_INC(run->global->cnts.noveltyDecayApplied);
+        }
     }
 
     /* Density - inputs with high coverage per byte are efficient */
@@ -266,8 +270,8 @@ uint64_t power_calculateEnergy(run_t* run, dynfile_t* dynfile) {
 
     /*
      * Mismatch fertility with saturation detection for differential fuzzing:
-     * - mismatchRefs: descendants caused NEW UNIQUE mismatches → boost
-     * - dupCrashRefs: descendants caused DUPLICATE crashes → penalize
+     * - mismatchRefs: descendants caused NEW UNIQUE mismatches => boost
+     * - dupCrashRefs: descendants caused DUPLICATE crashes => penalize
      *
      * This prevents getting stuck finding the same mismatch repeatedly.
      * Only boost if we're finding more unique crashes than duplicates.
@@ -306,10 +310,12 @@ uint64_t power_calculateEnergy(run_t* run, dynfile_t* dynfile) {
     time_t age_secs = now - timeAdded;
     if (unlikely(age_secs < freshTimeSec)) {
         energy <<= 2; /* added in last 60s - 4x */
+        ATOMIC_POST_INC(run->global->cnts.freshInputBoosts);
     } else if (age_secs < recentTimeSec) {
         energy <<= 1; /* added in last 5 minutes - 2x */
     } else if (unlikely(age_secs > staleTimeSec && refs == 0)) {
         energy >>= 1; /* older than 60 min with no children - 0.5x */
+        ATOMIC_POST_INC(run->global->cnts.staleInputPenalties);
     }
 
     /* Size - smaller inputs are faster and easier to analyze */
@@ -379,16 +385,18 @@ uint64_t power_calculateEnergy(run_t* run, dynfile_t* dynfile) {
     if (unlikely(selectCnt > 100)) {
         uint32_t penalty = HF_MIN(util_Log2(selectCnt / 100), 3);
         energy >>= penalty;
+        ATOMIC_POST_INC(run->global->cnts.diminishingReturnsPenalties);
     }
 
     /*
      * Depth - deeply derived inputs may be over-specialized.
-     * Progressive penalty - starts at depth 4, increases logarithmically.
+     * Progressive penalty - starts at depth 8, increases logarithmically.
      */
     uint8_t depth = dynfile->depth;
-    if (unlikely(depth > 8)) { /* Relaxed from 4 to 8 */
+    if (unlikely(depth > 8)) {
         uint32_t depth_penalty = HF_MIN(util_Log2(depth - 7), 3);
         energy >>= depth_penalty;
+        ATOMIC_POST_INC(run->global->cnts.depthPenalties);
     }
 
     /* Stagnation - focus on best inputs when stuck */
@@ -424,6 +432,20 @@ uint64_t power_calculateEnergy(run_t* run, dynfile_t* dynfile) {
 
     /* Convert energy to skip factor */
     energy = HF_CAP(energy, 1ULL, energyMax);
+
+    /* Track energy statistics for decay validation */
+    ATOMIC_POST_INC(run->global->cnts.energyCount);
+    ATOMIC_POST_ADD(run->global->cnts.energySum, energy);
+    
+    /* Update min/max atomically (race-tolerant for observability) */
+    uint64_t curMin = ATOMIC_GET(run->global->cnts.energyMin);
+    if (energy < curMin || curMin == 0) {
+        ATOMIC_SET(run->global->cnts.energyMin, energy);
+    }
+    uint64_t curMax = ATOMIC_GET(run->global->cnts.energyMax);
+    if (energy > curMax) {
+        ATOMIC_SET(run->global->cnts.energyMax, energy);
+    }
 
     return energy;
 }

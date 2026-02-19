@@ -201,6 +201,7 @@ static void arch_analyzeSignal(run_t* run, pid_t pid, int status) {
     LOG_I("Ok, that's interesting, saving input '%s'", run->crashFileName);
 
     ATOMIC_POST_INC(run->global->cnts.uniqueCrashesCnt);
+    ATOMIC_SET(run->global->cnts.lastCrashTime, (uint64_t)time(NULL));
     /* If unique crash found, reset dynFile counter */
     ATOMIC_CLEAR(run->global->cfg.dynFileIterExpire);
 
@@ -221,8 +222,8 @@ static void arch_analyzeSignal(run_t* run, pid_t pid, int status) {
         }
     }
 
-    if (!files_writeBufToFile(run->crashFileName, run->dynfile->data, run->dynfile->size,
-            O_CREAT | O_EXCL | O_WRONLY)) {
+    /* Use atomic write to ensure file appears fully formed for external observers */
+    if (!files_writeBufToFileAtomic(run->crashFileName, run->dynfile->data, run->dynfile->size)) {
         LOG_E("Couldn't save crash to '%s'", run->crashFileName);
     }
 

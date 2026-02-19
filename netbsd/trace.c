@@ -462,8 +462,8 @@ static void arch_traceSaveData(run_t* run, pid_t pid) {
         return;
     }
 
-    if (!files_writeBufToFile(run->crashFileName, run->dynfile->data, run->dynfile->size,
-            O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC)) {
+    /* Use atomic write to ensure file appears fully formed for external observers */
+    if (!files_writeBufToFileAtomic(run->crashFileName, run->dynfile->data, run->dynfile->size)) {
         LOG_E("Couldn't write to '%s'", run->crashFileName);
         return;
     }

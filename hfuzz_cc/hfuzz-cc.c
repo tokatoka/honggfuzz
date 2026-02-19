@@ -452,7 +452,7 @@ static void commonPostOpts(int* j, char** args) {
                 args[(*j)++] = "-fno-sanitize=fuzzer";
                 args[(*j)++] = "-fno-sanitize=fuzzer-no-link";
             }
-            args[(*j)++] = "-fsanitize-coverage=trace-pc-guard,trace-cmp,trace-div,indirect-calls,"
+            args[(*j)++] = "-fsanitize-coverage=trace-pc-guard,pc-table,trace-cmp,trace-div,indirect-calls,"
                            "trace-gep,stack-depth";
         } else {
             args[(*j)++] = "-fno-sanitize-coverage=trace-pc-guard";
@@ -600,22 +600,31 @@ static int ldMode(int argc, char** argv) {
     /* Reference standard honggfuzz libraries first (libhfuzz, libhfcommon and libhfnetdriver) */
     args[j++] = getLibHFNetDriverPath();
 
-    /* Ensure to link libhfuzz to the fuzz test executable*/
-    if (isExecutableBuild(argc, argv)) {
+    /*
+     * HFUZZ_SKIP_LIBHFUZZ: When set, skip linking libhfuzz.a
+     * This is used for building shared libraries that will have their sanitizer
+     * symbols resolved via LD_PRELOAD at runtime (e.g. firedancer's .so)
+     */
+    bool skipLibhfuzz = getenv("HFUZZ_SKIP_LIBHFUZZ") != NULL;
+    
+    if (!skipLibhfuzz) {
+        /* Ensure to link libhfuzz to the fuzz test executable*/
+        if (isExecutableBuild(argc, argv)) {
 #if defined(_HF_ARCH_DARWIN)
-        args[j++] = "-Wl,-force_load";
+            args[j++] = "-Wl,-force_load";
 #else
-        args[j++] = "-Wl,--whole-archive";
+            args[j++] = "-Wl,--whole-archive";
 #endif
-    }
+        }
 
-    args[j++] = getLibHFuzzPath();
+        args[j++] = getLibHFuzzPath();
 
 #if !defined(_HF_ARCH_DARWIN)
-    if (isExecutableBuild(argc, argv)) {
-        args[j++] = "-Wl,--no-whole-archive";
-    }
+        if (isExecutableBuild(argc, argv)) {
+            args[j++] = "-Wl,--no-whole-archive";
+        }
 #endif /* !defined(_HF_ARCH_DARWIN) */
+    }
 
     args[j++] = getLibHFCommonPath();
 

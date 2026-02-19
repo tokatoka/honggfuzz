@@ -701,7 +701,6 @@ static void arch_traceSaveData(run_t* run, pid_t pid) {
         crashAddr = 0UL;
     }
 
-    int      open_flags = O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC;
     uint64_t pc         = 0;
     uint64_t status_reg = 0;
     size_t   pcRegSz    = arch_getPC(pid, &pc, &status_reg);
@@ -904,10 +903,8 @@ static void arch_traceSaveData(run_t* run, pid_t pid) {
             snprintf(origFile, sizeof(origFile), "%s.orig", run->crashFileName);
             if (!files_exists(origFile)) {
                 rename(run->crashFileName, origFile);
-            } else {
-                /* allow overwrite */
-                open_flags = O_CREAT | O_WRONLY | O_CLOEXEC;
             }
+            /* atomic write via rename() handles overwrite automatically */
         } else {
             LOG_I("Crash (dup): '%s' already exists, skipping", run->crashFileName);
             /*
@@ -935,8 +932,9 @@ static void arch_traceSaveData(run_t* run, pid_t pid) {
         }
     }
 
-    if (!files_writeBufToFile(
-            run->crashFileName, run->dynfile->data, run->dynfile->size, open_flags)) {
+    /* Use atomic write to ensure file appears fully formed for external observers */
+    if (!files_writeBufToFileAtomic(
+            run->crashFileName, run->dynfile->data, run->dynfile->size)) {
         LOG_E("Couldn't write to '%s'", run->crashFileName);
         return;
     }
@@ -949,6 +947,7 @@ static void arch_traceSaveData(run_t* run, pid_t pid) {
     LOG_I("Crash: saved as '%s'", run->crashFileName);
 
     ATOMIC_POST_INC(run->global->cnts.uniqueCrashesCnt);
+    ATOMIC_SET(run->global->cnts.lastCrashTime, (uint64_t)time(NULL));
     /* If unique crash found, reset dynFile counter */
     ATOMIC_CLEAR(run->global->cfg.dynFileIterExpire);
 

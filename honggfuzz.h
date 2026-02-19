@@ -131,7 +131,8 @@ typedef struct {
     uint64_t newBBCnt;
     uint64_t softCntPc;
     uint64_t softCntEdge;
-    uint64_t softCntCmp;
+    uint64_t softCntCmp;        /* Unbounded: CMP solving progress (trace_cmp improvements) */
+    uint64_t softCntEdgeBucket; /* Unbounded: edge count bucket increases (less meaningful) */
 } hwcnt_t;
 
 typedef enum {
@@ -140,6 +141,7 @@ typedef enum {
     _HF_STATE_DYNAMIC_DRY_RUN,
     _HF_STATE_DYNAMIC_MAIN,
     _HF_STATE_DYNAMIC_MINIMIZE,
+    _HF_STATE_REPLAY,
 } fuzzState_t;
 
 typedef enum {
@@ -219,7 +221,8 @@ typedef struct {
     /* Per-thread counters - cache-line padded to avoid false sharing */
     cntCacheLine_t  pidNewPC[_HF_THREAD_MAX];
     cntCacheLine_t  pidNewEdge[_HF_THREAD_MAX];
-    cntCacheLine_t  pidNewCmp[_HF_THREAD_MAX];
+    cntCacheLine_t  pidNewCmp[_HF_THREAD_MAX];        /* CMP solving: trace_cmp bit improvements */
+    cntCacheLine_t  pidEdgeBucketInc[_HF_THREAD_MAX]; /* Edge frequency: bucket increases (unbounded) */
     cntCacheLine_t  pidTotalPC[_HF_THREAD_MAX];
     cntCacheLine_t  pidTotalEdge[_HF_THREAD_MAX];
     cntCacheLine_t  pidTotalCmp[_HF_THREAD_MAX];
@@ -346,6 +349,7 @@ typedef struct {
         size_t      dynFileIterExpire;
         bool        only_printable;
         bool        minimize;
+        bool        replay;
         bool        switchingToFDM;
     } cfg;
     struct {
@@ -379,6 +383,37 @@ typedef struct {
         size_t diffFuzzPhase2Fallbacks;   /* Times we fell back to phase 2 selection */
         size_t diffFuzzSaturatedLineages; /* Lineages that became saturated */
         size_t diffFuzzFertileBoosts;     /* Times we boosted a fertile lineage */
+        /* Power scheduling / decay metrics */
+        size_t noveltyDecayApplied;       /* Times novelty decay reduced energy */
+        size_t freshInputBoosts;          /* Times <60s freshness boost applied */
+        size_t staleInputPenalties;       /* Times >60min no-children penalty applied */
+        size_t diminishingReturnsPenalties; /* Times selectCnt>100 penalty applied */
+        size_t depthPenalties;            /* Times depth>8 penalty applied */
+        uint64_t energyMin;               /* Lowest energy calculated (track extremes) */
+        uint64_t energyMax;               /* Highest energy calculated */
+        uint64_t energySum;               /* Sum of all energies (for average) */
+        size_t energyCount;               /* Count of energy calculations */
+        /* Execution time metrics */
+        uint64_t execTimeSum;             /* Sum of execution times in usecs */
+        uint64_t execTimeMax;             /* Slowest single execution in usecs */
+        size_t execTimeSlowCnt;           /* Executions > 10x average (sampled) */
+        /* Mutation effectiveness metrics */
+        size_t mutationsWithNewCov;       /* Mutations that discovered new coverage */
+        size_t mutationsWithoutNewCov;    /* Mutations that added nothing new */
+        /* Corpus health metrics */
+        size_t corpusQueueWraps;          /* Times we wrapped around corpus queue */
+        uint32_t corpusMaxDepth;          /* Deepest mutation depth seen */
+        size_t explorationModeSelections; /* Random selections in exploration mode (stagnation >3h) */
+        /* Coverage progress metrics */
+        uint64_t lastNewCovTime;          /* Timestamp of last new coverage (secs) */
+        uint64_t lastCovEdgeCount;        /* Edge count at last check (for velocity) */
+        uint64_t lastCrashTime;           /* Timestamp of last unique crash/mismatch */
+        size_t corpusSizeAtLastLog;       /* Corpus size at last log (for growth rate) */
+        /* Sanity check counters (should all be 0 or very low) */
+        size_t emptyQueueSelections;      /* Selected from empty queue */
+        size_t forkFailures;              /* Fork syscall failures */
+        size_t persistentResets;          /* Persistent mode resets */
+        size_t fileIOErrors;              /* File read/write failures */
     } cnts;
     struct {
         bool enabled;
@@ -454,6 +489,28 @@ typedef struct {
     dynfile_t*   current;
     hwcnt_t      hwCnts;
     uint8_t      mutationTiers; /* Bitmap of mutation tiers used this run */
+
+    /* Deferred metrics snapshot: filled under dynfileq rwlock,
+       flushed after release to avoid blocking all fuzzer threads on
+       ClickHouse network I/O during startup. */
+    bool         pendingStatsLog;
+    struct {
+        uint64_t mutationsCnt, softCntPc, softCntEdge;
+        uint64_t total;
+        float    repeatPct, highPct, lowPct, phase2Pct;
+        uint64_t avgEnergy;
+        float    avgIters;
+        uint64_t maxIters, eMin, eMax;
+        uint64_t noveltyDecay, freshBoost, stalePenalty, diminishing, depthPenalty;
+        uint64_t corpusSize, globalAvgEnergy;
+        uint64_t avgExecTime, execTimeMax, execTimeSlow;
+        float    hitRate;
+        uint64_t plateauSecs, queueWraps;
+        uint32_t maxDepth;
+        uint64_t uniqueCrashes, totalCrashes, timeouts;
+        uint64_t fertileBoosts, saturatedLineages, exploreSelects;
+        uint64_t secsSinceCrash, stagnationSecs, corpusGrowth;
+    } statsSnapshot;
 
     struct {
         /* For Linux code */

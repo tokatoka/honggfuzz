@@ -90,6 +90,41 @@ bool files_writeBufToFile(const char* fname, const uint8_t* buf, size_t fileSz, 
     return ret;
 }
 
+bool files_writeBufToFileAtomic(const char* fname, const uint8_t* buf, size_t fileSz) {
+    /* 
+     * Atomic write: write to temp file first, then rename.
+     * This ensures the final filename only appears once data is fully written.
+     * The rename() syscall is atomic on POSIX filesystems.
+     */
+    char tmpName[PATH_MAX];
+    snprintf(tmpName, sizeof(tmpName), "%s.tmp.%d", fname, (int)getpid());
+    
+    int fd = TEMP_FAILURE_RETRY(open(tmpName, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0644));
+    if (fd == -1) {
+        PLOG_W("Couldn't create temp file '%s' for atomic write", tmpName);
+        return false;
+    }
+
+    bool ret = files_writeToFd(fd, buf, fileSz);
+    close(fd);
+    
+    if (!ret) {
+        PLOG_W("Couldn't write '%zu' bytes to temp file '%s'", fileSz, tmpName);
+        unlink(tmpName);
+        return false;
+    }
+    
+    /* Atomic rename - file appears fully formed or not at all */
+    if (TEMP_FAILURE_RETRY(rename(tmpName, fname)) == -1) {
+        PLOG_W("Couldn't rename '%s' to '%s'", tmpName, fname);
+        unlink(tmpName);
+        return false;
+    }
+    
+    LOG_D("Atomically written '%zu' bytes to '%s'", fileSz, fname);
+    return true;
+}
+
 bool files_writeStrToFile(const char* fname, const char* str, int flags) {
     return files_writeBufToFile(fname, (uint8_t*)str, strlen(str), flags);
 }

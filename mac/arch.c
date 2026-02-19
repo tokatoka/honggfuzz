@@ -269,8 +269,8 @@ static void arch_analyzeSignal(run_t* run, int status) {
         return;
     }
 
-    if (!files_writeBufToFile(run->crashFileName, run->dynfile->data, run->dynfile->size,
-            O_CREAT | O_EXCL | O_WRONLY)) {
+    /* Use atomic write to ensure file appears fully formed for external observers */
+    if (!files_writeBufToFileAtomic(run->crashFileName, run->dynfile->data, run->dynfile->size)) {
         LOG_E("Couldn't save crash as '%s'", run->crashFileName);
         return;
     }

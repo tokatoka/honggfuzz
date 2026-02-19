@@ -45,6 +45,7 @@
 #include "mangle.h"
 #include "power.h"
 #include "subproc.h"
+#include "hfuzz_metrics.h"
 
 void input_setSize(run_t* run, size_t sz) {
     if (run->dynfile->size == sz) {
@@ -344,8 +345,9 @@ bool input_writeCovFile(const char* dir, dynfile_t* dynfile) {
 
     LOG_D("Adding file '%s' to the corpus directory '%s'", fname, dir);
 
-    if (!files_writeBufToFile(
-            fname, dynfile->data, dynfile->size, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC)) {
+    /* Use atomic write to ensure corpus files appear fully formed for external observers
+     * (e.g., Octane's async corpus sync which may read files while fuzzer is running) */
+    if (!files_writeBufToFileAtomic(fname, dynfile->data, dynfile->size)) {
         LOG_W("Couldn't write buffer to file '%s' (sz=%zu)", fname, dynfile->size);
         return false;
     }
@@ -439,6 +441,7 @@ void input_addDynamicInput(run_t* run) {
         run->global->io.outputDir ? run->global->io.outputDir : run->global->io.inputDir;
     if (!input_writeCovFile(outDir, dynfile)) {
         LOG_E("Couldn't save the coverage data to '%s'", run->global->io.outputDir);
+        ATOMIC_POST_INC(run->global->cnts.fileIOErrors);
     }
 
     /* No need to add files to the new coverage dir, if it's not the main phase */
@@ -527,6 +530,11 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
             dynfile_t* next = TAILQ_NEXT(cur, pointers);
             __builtin_prefetch(next, 0, 1);  /* Read, low temporal locality */
             hfuzz->io.dynfileqCurrent = next;
+            
+            /* Track queue wrap-arounds for corpus health monitoring */
+            if (unlikely(next == NULL)) {
+                ATOMIC_POST_INC(hfuzz->cnts.corpusQueueWraps);
+            }
 
             /* Imported inputs bypass energy calculation - rare */
             if (unlikely(cur->imported)) {
@@ -654,12 +662,15 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
         }
         #undef TOP_CANDIDATES
 
-        /* Instrumentation: log selection stats every 30 seconds */
+        /* Instrumentation: log selection stats every 15 seconds
+         * Use time-based check as primary trigger (not count-based) to support
+         * slow targets like sol_txn_diff that may only do 10-20 exec/sec.
+         * The count check (every 1024) is just to avoid calling time() too often. */
         uint64_t count = ATOMIC_POST_INC(selectionCount);
-        if ((count & 0xFFFF) == 0) {  /* Check every 65536 selections */
+        if ((count & 0x3FF) == 0) {  /* Check time every 1024 selections */
             time_t logNow = time(NULL);
             time_t lastLog = ATOMIC_GET(lastLogTime);
-            if (logNow - lastLog >= 30) {
+            if (logNow - lastLog >= 15) {
                 ATOMIC_SET(lastLogTime, logNow);
                 uint64_t repeat = ATOMIC_GET(phase1Repeat);
                 uint64_t high = ATOMIC_GET(phase1HighEnergy);
@@ -671,7 +682,14 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                     uint64_t iters = ATOMIC_GET(totalIterations);
                     uint64_t maxIters = ATOMIC_GET(maxIterationsSeen);
                     uint64_t nonRepeat = high + low + p2;
-                    LOG_I("[SCHED-STATS] total=%zu repeat=%.1f%% high=%.1f%% low=%.1f%% phase2=%.1f%% avg_energy=%zu avg_iters=%.1f max_iters=%zu",
+                    
+                    /* Fetch decay/energy stats from global counters */
+                    uint64_t eMin = ATOMIC_GET(hfuzz->cnts.energyMin);
+                    uint64_t eMax = ATOMIC_GET(hfuzz->cnts.energyMax);
+                    uint64_t eTotal = ATOMIC_GET(hfuzz->cnts.energySum);
+                    uint64_t eCount = ATOMIC_GET(hfuzz->cnts.energyCount);
+                    
+                    LOG_I("[SCHED-STATS] total=%zu repeat=%.1f%% high=%.1f%% low=%.1f%% phase2=%.1f%% avg_energy=%zu avg_iters=%.1f max_iters=%zu energy_range=[%zu,%zu]",
                           (size_t)total,
                           (double)repeat * 100.0 / total,
                           (double)high * 100.0 / total,
@@ -679,7 +697,142 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                           (double)p2 * 100.0 / total,
                           nonRepeat > 0 ? (size_t)(esum / nonRepeat) : 0,
                           nonRepeat > 0 ? (double)iters / nonRepeat : 0.0,
-                          (size_t)maxIters);
+                          (size_t)maxIters,
+                          (size_t)eMin, (size_t)eMax);
+                    
+                    /* Decay-specific stats for validating power scheduling changes */
+                    uint64_t noveltyDecay = ATOMIC_GET(hfuzz->cnts.noveltyDecayApplied);
+                    uint64_t freshBoost = ATOMIC_GET(hfuzz->cnts.freshInputBoosts);
+                    uint64_t stalePenalty = ATOMIC_GET(hfuzz->cnts.staleInputPenalties);
+                    uint64_t diminishing = ATOMIC_GET(hfuzz->cnts.diminishingReturnsPenalties);
+                    uint64_t depthPenalty = ATOMIC_GET(hfuzz->cnts.depthPenalties);
+                    
+                    LOG_I("[DECAY-STATS] novelty_decay=%zu fresh_boost=%zu stale_penalty=%zu diminishing=%zu depth_penalty=%zu corpus=%zu global_avg_energy=%zu",
+                          (size_t)noveltyDecay,
+                          (size_t)freshBoost,
+                          (size_t)stalePenalty,
+                          (size_t)diminishing,
+                          (size_t)depthPenalty,
+                          (size_t)ATOMIC_GET(hfuzz->io.dynfileqCnt),
+                          eCount > 0 ? (size_t)(eTotal / eCount) : 0);
+                    
+                    /* Health and performance stats for fuzzer monitoring */
+                    uint64_t execTimeSum = ATOMIC_GET(hfuzz->cnts.execTimeSum);
+                    uint64_t execTimeMax = ATOMIC_GET(hfuzz->cnts.execTimeMax);
+                    uint64_t execTimeSlow = ATOMIC_GET(hfuzz->cnts.execTimeSlowCnt);
+                    uint64_t mutWithCov = ATOMIC_GET(hfuzz->cnts.mutationsWithNewCov);
+                    uint64_t mutWithoutCov = ATOMIC_GET(hfuzz->cnts.mutationsWithoutNewCov);
+                    uint64_t queueWraps = ATOMIC_GET(hfuzz->cnts.corpusQueueWraps);
+                    uint32_t maxDepth = ATOMIC_GET(hfuzz->cnts.corpusMaxDepth);
+                    
+                    /* Calculate mutation hit rate (percentage that found new coverage) */
+                    uint64_t mutTotal = mutWithCov + mutWithoutCov;
+                    double hitRate = mutTotal > 0 ? ((double)mutWithCov * 100.0 / mutTotal) : 0.0;
+                    
+                    /* Calculate coverage plateau (seconds since last new coverage) */
+                    uint64_t lastCovTime = ATOMIC_GET(hfuzz->timing.lastCovUpdate);
+                    uint64_t plateauSecs = lastCovTime > 0 ? (uint64_t)(logNow - (time_t)lastCovTime) : 0;
+                    
+                    /* Average exec time (sampled count is mutationsCnt >> 8) */
+                    uint64_t sampledCount = total >> 8;
+                    uint64_t avgExecTime = sampledCount > 0 ? (execTimeSum / sampledCount) : 0;
+                    
+                    LOG_I("[HEALTH-STATS] exec_avg=%zuus exec_max=%zuus slow_execs=%zu mut_hit_rate=%.2f%% plateau_secs=%zu queue_wraps=%zu max_depth=%u",
+                          (size_t)avgExecTime,
+                          (size_t)execTimeMax,
+                          (size_t)execTimeSlow,
+                          hitRate,
+                          (size_t)plateauSecs,
+                          (size_t)queueWraps,
+                          maxDepth);
+                    
+                    /* Sanity check stats (should all be 0 or very low) */
+                    uint64_t forkFails = ATOMIC_GET(hfuzz->cnts.forkFailures);
+                    uint64_t persistResets = ATOMIC_GET(hfuzz->cnts.persistentResets);
+                    uint64_t ioErrors = ATOMIC_GET(hfuzz->cnts.fileIOErrors);
+                    
+                    if (forkFails > 0 || persistResets > 0 || ioErrors > 0) {
+                        LOG_W("[SANITY-WARN] fork_failures=%zu persistent_resets=%zu io_errors=%zu",
+                              (size_t)forkFails, (size_t)persistResets, (size_t)ioErrors);
+                    }
+                    
+                    /* Differential fuzzing specific stats */
+                    uint64_t uniqueCrashes = ATOMIC_GET(hfuzz->cnts.uniqueCrashesCnt);
+                    uint64_t totalCrashes = ATOMIC_GET(hfuzz->cnts.crashesCnt);
+                    uint64_t timeouts = ATOMIC_GET(hfuzz->cnts.timeoutedCnt);
+                    uint64_t fertileBoosts = ATOMIC_GET(hfuzz->cnts.diffFuzzFertileBoosts);
+                    uint64_t saturatedLineages = ATOMIC_GET(hfuzz->cnts.diffFuzzSaturatedLineages);
+                    uint64_t exploreSelects = ATOMIC_GET(hfuzz->cnts.explorationModeSelections);
+                    uint64_t lastCrashTime = ATOMIC_GET(hfuzz->cnts.lastCrashTime);
+                    
+                    /* Time since last crash in human-readable format */
+                    uint64_t secsSinceCrash = lastCrashTime > 0 ? (uint64_t)(logNow - (time_t)lastCrashTime) : 0;
+                    uint64_t hoursSinceCrash = secsSinceCrash / 3600;
+                    uint64_t minsSinceCrash = (secsSinceCrash % 3600) / 60;
+                    
+                    /* Stagnation in human-readable format */
+                    uint64_t stagnationHours = plateauSecs / 3600;
+                    uint64_t stagnationMins = (plateauSecs % 3600) / 60;
+                    
+                    /* Corpus growth rate (inputs added since last log) */
+                    size_t currentCorpusSize = ATOMIC_GET(hfuzz->io.dynfileqCnt);
+                    size_t lastCorpusSize = ATOMIC_GET(hfuzz->cnts.corpusSizeAtLastLog);
+                    size_t corpusGrowth = (currentCorpusSize > lastCorpusSize) ? 
+                                          (currentCorpusSize - lastCorpusSize) : 0;
+                    ATOMIC_SET(hfuzz->cnts.corpusSizeAtLastLog, currentCorpusSize);
+                    
+                    LOG_I("[DIFF-FUZZ-STATS] unique_crashes=%zu total_crashes=%zu timeouts=%zu "
+                          "fertile_boosts=%zu saturated=%zu explore_selects=%zu "
+                          "since_crash=%zuh%zum stagnation=%zuh%zum corpus_growth=%zu",
+                          (size_t)uniqueCrashes,
+                          (size_t)totalCrashes,
+                          (size_t)timeouts,
+                          (size_t)fertileBoosts,
+                          (size_t)saturatedLineages,
+                          (size_t)exploreSelects,
+                          (size_t)hoursSinceCrash, (size_t)minsSinceCrash,
+                          (size_t)stagnationHours, (size_t)stagnationMins,
+                          corpusGrowth);
+                    
+                    /* Defer the metrics bridge call until after the rwlock is released.
+                     * All values are already captured in local variables from ATOMIC_GETs. */
+                    run->pendingStatsLog = true;
+                    run->statsSnapshot.mutationsCnt        = (uint64_t)ATOMIC_GET(hfuzz->cnts.mutationsCnt);
+                    run->statsSnapshot.softCntPc           = (uint64_t)ATOMIC_GET(hfuzz->feedback.hwCnts.softCntPc);
+                    run->statsSnapshot.softCntEdge         = (uint64_t)ATOMIC_GET(hfuzz->feedback.hwCnts.softCntEdge);
+                    run->statsSnapshot.total               = (uint64_t)total;
+                    run->statsSnapshot.repeatPct           = (float)((double)repeat * 100.0 / total);
+                    run->statsSnapshot.highPct             = (float)((double)high * 100.0 / total);
+                    run->statsSnapshot.lowPct              = (float)((double)low * 100.0 / total);
+                    run->statsSnapshot.phase2Pct           = (float)((double)p2 * 100.0 / total);
+                    run->statsSnapshot.avgEnergy           = nonRepeat > 0 ? (uint64_t)(esum / nonRepeat) : 0;
+                    run->statsSnapshot.avgIters            = nonRepeat > 0 ? (float)((double)iters / nonRepeat) : 0.0f;
+                    run->statsSnapshot.maxIters            = (uint64_t)maxIters;
+                    run->statsSnapshot.eMin                = (uint64_t)eMin;
+                    run->statsSnapshot.eMax                = (uint64_t)eMax;
+                    run->statsSnapshot.noveltyDecay        = (uint64_t)noveltyDecay;
+                    run->statsSnapshot.freshBoost          = (uint64_t)freshBoost;
+                    run->statsSnapshot.stalePenalty         = (uint64_t)stalePenalty;
+                    run->statsSnapshot.diminishing         = (uint64_t)diminishing;
+                    run->statsSnapshot.depthPenalty         = (uint64_t)depthPenalty;
+                    run->statsSnapshot.corpusSize           = (uint64_t)currentCorpusSize;
+                    run->statsSnapshot.globalAvgEnergy     = eCount > 0 ? (uint64_t)(eTotal / eCount) : 0;
+                    run->statsSnapshot.avgExecTime         = (uint64_t)avgExecTime;
+                    run->statsSnapshot.execTimeMax         = (uint64_t)execTimeMax;
+                    run->statsSnapshot.execTimeSlow        = (uint64_t)execTimeSlow;
+                    run->statsSnapshot.hitRate             = (float)hitRate;
+                    run->statsSnapshot.plateauSecs         = (uint64_t)plateauSecs;
+                    run->statsSnapshot.queueWraps          = (uint64_t)queueWraps;
+                    run->statsSnapshot.maxDepth            = maxDepth;
+                    run->statsSnapshot.uniqueCrashes       = (uint64_t)uniqueCrashes;
+                    run->statsSnapshot.totalCrashes        = (uint64_t)totalCrashes;
+                    run->statsSnapshot.timeouts            = (uint64_t)timeouts;
+                    run->statsSnapshot.fertileBoosts       = (uint64_t)fertileBoosts;
+                    run->statsSnapshot.saturatedLineages   = (uint64_t)saturatedLineages;
+                    run->statsSnapshot.exploreSelects      = (uint64_t)exploreSelects;
+                    run->statsSnapshot.secsSinceCrash      = (uint64_t)secsSinceCrash;
+                    run->statsSnapshot.stagnationSecs      = (uint64_t)plateauSecs;
+                    run->statsSnapshot.corpusGrowth        = (uint64_t)corpusGrowth;
                 }
             }
         }
@@ -720,6 +873,25 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
 
             run->triesLeft = 0;
         }
+    }
+
+    /* Flush deferred metrics log AFTER releasing the rwlock to avoid blocking
+     * all fuzzer threads on ClickHouse network I/O. */
+    if (run->pendingStatsLog) {
+        run->pendingStatsLog = false;
+        const __typeof__(run->statsSnapshot)* s = &run->statsSnapshot;
+        hfuzz_metrics_log_stats(
+            s->mutationsCnt, s->softCntPc, s->softCntEdge,
+            s->total, s->repeatPct, s->highPct, s->lowPct, s->phase2Pct,
+            s->avgEnergy, s->avgIters, s->maxIters, s->eMin, s->eMax,
+            s->noveltyDecay, s->freshBoost, s->stalePenalty, s->diminishing,
+            s->depthPenalty, s->corpusSize, s->globalAvgEnergy,
+            s->avgExecTime, s->execTimeMax, s->execTimeSlow, s->hitRate,
+            s->plateauSecs, s->queueWraps, s->maxDepth,
+            s->uniqueCrashes, s->totalCrashes, s->timeouts,
+            s->fertileBoosts, s->saturatedLineages, s->exploreSelects,
+            s->secsSinceCrash, s->stagnationSecs, s->corpusGrowth
+        );
     }
 
     /* Copy data outside of the lock - inputs are immutable once in the queue */

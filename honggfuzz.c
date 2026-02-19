@@ -508,10 +508,11 @@ int main(int argc, char** argv) {
 
     setupRLimits();
     setupSignalsPreThreads();
-    fuzz_threadsStart(&hfuzz);
 
-    /* Initialize metrics logging (optional - weak symbol, no-op if not overridden) */
+    /* Initialize metrics logging BEFORE starting fuzz threads (so coverage registration works) */
     hfuzz_metrics_session_init(hfuzz.exe.cmdline[0], argc, myargs);
+
+    fuzz_threadsStart(&hfuzz);
 
     pthread_t sigthread;
     if (!subproc_runThread(&hfuzz, &sigthread, signalThread, /* joinable= */ false)) {

@@ -36,6 +36,16 @@ GREP_COLOR ?=
 BUILD_OSSFUZZ_STATIC ?= false # for https://github.com/google/oss-fuzz
 BUILD_LINUX_NO_BFD ?= false # for users who don't want to use libbfd/binutils
 
+# Metrics bridge integration for solfuzz ClickHouse logging
+# Set SOLFUZZ_METRICS_BRIDGE_DIR to the solfuzz build directory containing libhfuzz_metrics_bridge.so
+# Example: make SOLFUZZ_METRICS_BRIDGE_DIR=/data/cmoyes/solfuzz/build-hf
+ifdef SOLFUZZ_METRICS_BRIDGE_DIR
+    COMMON_LDFLAGS += -L$(SOLFUZZ_METRICS_BRIDGE_DIR) -lhfuzz_metrics_bridge
+    COMMON_LDFLAGS += -Wl,-rpath,$(SOLFUZZ_METRICS_BRIDGE_DIR)
+    COMMON_LDFLAGS += -lstdc++
+    $(info Honggfuzz: Linking against solfuzz metrics bridge at $(SOLFUZZ_METRICS_BRIDGE_DIR))
+endif
+
 REALOS = $(shell uname -s)
 OS ?= $(shell uname -s)
 MARCH ?= $(shell uname -m)
@@ -201,6 +211,8 @@ GIT_BUILDINFO_H := git_buildinfo.h
 
 LHFUZZ_SRCS := $(sort $(wildcard libhfuzz/*.c))
 LHFUZZ_OBJS := $(LHFUZZ_SRCS:.c=.o)
+# Include hfuzz_metrics.o in libhfuzz.a (required by instrument.c)
+LHFUZZ_OBJS += hfuzz_metrics.o
 LHFUZZ_ARCH := libhfuzz/libhfuzz.a
 LHFUZZ_SHARED := libhfuzz/libhfuzz.so
 HFUZZ_INC ?= $(shell pwd)

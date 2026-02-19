@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>  /* For PATH_MAX */
 #if defined(_HF_ARCH_LINUX)
 #include <linux/mman.h>
 #endif /* defined(_HF_ARCH_LINUX) */
@@ -865,7 +866,15 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
     Dl_info info;
     const char* libName = "unknown";
     if (dladdr(start, &info) && info.dli_fname) {
-        libName = info.dli_fname;
+        /* Resolve relative paths to absolute paths for symbolization.
+         * This ensures addr2line can find the binary regardless of CWD.
+         * Use thread-local storage to avoid malloc during static init. */
+        static __thread char resolved_path[PATH_MAX];
+        if (realpath(info.dli_fname, resolved_path)) {
+            libName = resolved_path;
+        } else {
+            libName = info.dli_fname;  /* Fallback to original if realpath fails */
+        }
     }
     uint64_t pathHash = util_hash(libName, strlen(libName));
 
@@ -925,8 +934,8 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
          * This synchronizes with ACQUIRE load in findTrackedModule(). */
         atomic_store_explicit(&globalCovFeedback->trackedModuleCount, slot + 1, memory_order_release);
         
-        LOG_I("PC-Guard module registration: %p-%p (count:%zu) at guard %u in slot %u", 
-            start, stop, guardCount, baseGuard, slot);
+        LOG_I("PC-Guard module registration: %p-%p (count:%zu) at guard %u in slot %u from %s", 
+            start, stop, guardCount, baseGuard, slot, libName);
         
         /* Notify metrics of new module (optional - weak symbol, no-op if not overridden) */
         hfuzz_metrics_register_module(libName, baseGuard, (uint32_t)guardCount);
@@ -945,6 +954,17 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
             guardCount, globalTotal, libName);
     }
 }
+
+/* Logarithmic edge bucket counting for corpus decisions.
+ * Higher bucket transitions are counted with decreasing probability.
+ * Uses guard value for deterministic selection: count if (guard % (oldval + 1)) == 0
+ * This gives: 100% for 0=>1, 50% for 1=>2, 33% for 2=>4, 20% for 4=>8, etc.
+ * Result: logarithmic expected corpus additions per edge, never fully ignoring transitions.
+ *
+ * When disabled (set to 0), falls back to the original behavior: every edge bucket
+ * transition unconditionally increments pidNewCmp (unbounded, can dominate corpus).
+ */
+#define _HF_EDGE_BUCKET_LOG_COUNTING 1
 
 /* Map number of visits to an edge into buckets */
 static uint8_t const instrumentCntMap[256] = {
@@ -1035,7 +1055,15 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard(uint32_t* guard_ptr)
                 ATOMIC_PRE_INC(globalCovFeedback->pidRareEdgeCnt[my_thread_no].val);
             }
         } else if (oldval < newval) {
+#if _HF_EDGE_BUCKET_LOG_COUNTING
+            /* Logarithmic edge bucket counting: probability = 1/(oldval+1)
+             * Uses guard value for deterministic selection */
+            if ((guard % (oldval + 1)) == 0) {
+                ATOMIC_PRE_INC(globalCovFeedback->pidEdgeBucketInc[my_thread_no].val);
+            }
+#else
             ATOMIC_PRE_INC(globalCovFeedback->pidNewCmp[my_thread_no].val);
+#endif
         }
     }
 }
@@ -1077,7 +1105,15 @@ void instrument8BitCountersCount(void) {
                         ATOMIC_PRE_INC(globalCovFeedback->pidRareEdgeCnt[my_thread_no].val);
                     }
                 } else if (oldval < newval) {
+#if _HF_EDGE_BUCKET_LOG_COUNTING
+                    /* Logarithmic edge bucket counting: probability = 1/(oldval+1)
+                     * Uses guard value for deterministic selection */
+                    if ((guard % (oldval + 1)) == 0) {
+                        ATOMIC_PRE_INC(globalCovFeedback->pidEdgeBucketInc[my_thread_no].val);
+                    }
+#else
                     ATOMIC_PRE_INC(globalCovFeedback->pidNewCmp[my_thread_no].val);
+#endif
                 }
             }
 
@@ -1109,7 +1145,15 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
     Dl_info info;
     const char* libName = "unknown";
     if (dladdr(start, &info) && info.dli_fname) {
-        libName = info.dli_fname;
+        /* Resolve relative paths to absolute paths for symbolization.
+         * This ensures addr2line can find the binary regardless of CWD.
+         * Use thread-local storage to avoid malloc during static init. */
+        static __thread char resolved_path[PATH_MAX];
+        if (realpath(info.dli_fname, resolved_path)) {
+            libName = resolved_path;
+        } else {
+            libName = info.dli_fname;  /* Fallback to original if realpath fails */
+        }
     }
     /* Use different hash space for 8-bit counters vs PC guards to avoid collisions */
     uint64_t pathHash = util_hash(libName, strlen(libName)) ^ 0x8B178B178B178B17ULL;
@@ -1226,7 +1270,15 @@ void __sanitizer_cov_pcs_init(const uintptr_t* pcs_beg, const uintptr_t* pcs_end
     Dl_info info;
     const char* libName = "unknown";
     if (dladdr((void*)pcs_beg, &info) && info.dli_fname) {
-        libName = info.dli_fname;
+        /* Resolve relative paths to absolute paths for symbolization.
+         * This ensures addr2line can find the binary regardless of CWD.
+         * Use thread-local storage to avoid malloc during static init. */
+        static __thread char resolved_path[PATH_MAX];
+        if (realpath(info.dli_fname, resolved_path)) {
+            libName = resolved_path;
+        } else {
+            libName = info.dli_fname;  /* Fallback to original if realpath fails */
+        }
     }
     
     /* Find the matching module registration to get the guard_start.
@@ -1314,6 +1366,7 @@ void instrumentClearNewCov() {
     ATOMIC_CLEAR(globalCovFeedback->pidNewPC[my_thread_no].val);
     ATOMIC_CLEAR(globalCovFeedback->pidNewEdge[my_thread_no].val);
     ATOMIC_CLEAR(globalCovFeedback->pidNewCmp[my_thread_no].val);
+    ATOMIC_CLEAR(globalCovFeedback->pidEdgeBucketInc[my_thread_no].val);
 
     ATOMIC_CLEAR(globalCovFeedback->pidTotalPC[my_thread_no].val);
     ATOMIC_CLEAR(globalCovFeedback->pidTotalEdge[my_thread_no].val);

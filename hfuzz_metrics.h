@@ -157,6 +157,115 @@ void hfuzz_metrics_log_full_coverage_report(const uint8_t* guard_map,
                                              uint64_t guard_count,
                                              const char* output_path);
 
+/*
+ * Register the shared coverage feedback pointers for live monitoring.
+ * This starts a background thread that periodically snapshots coverage
+ * and logs newly-covered guards to ClickHouse with symbolization.
+ *
+ * guard_map: pointer to the pcGuardMap (8-bit counters per guard)
+ * guard_count_ptr: pointer to the atomic guard count (feedback_t.guardNb)
+ *
+ * The background thread:
+ * - Runs every 60 seconds (configurable)
+ * - Compares current coverage to previous snapshot
+ * - Symbolizes newly-covered guards (cached for efficiency)
+ * - Logs all covered guards with hit counts to ClickHouse
+ *
+ * This enables live coverage visualization with minimal per-execution overhead.
+ */
+void hfuzz_metrics_register_coverage_feedback(const uint8_t* guard_map,
+                                               void* guard_count_ptr);
+
+/*
+ * Log comprehensive fuzzer statistics.
+ * Called periodically from input.c after the SCHED/DECAY/HEALTH/DIFF-FUZZ-STATS LOG_I calls.
+ * Contains all the rich metrics about scheduling, energy decay, health, and differential fuzzing.
+ *
+ * SCHED-STATS:
+ *   sched_total: total scheduling decisions
+ *   repeat_pct: percentage of repeated inputs
+ *   high_pct: percentage of high-priority selections
+ *   low_pct: percentage of low-priority selections
+ *   phase2_pct: percentage of phase2 fallback selections
+ *   avg_energy: average energy assigned to inputs
+ *   avg_iters: average iterations per input
+ *   max_iters: maximum iterations seen for any input
+ *   energy_min/energy_max: range of energy values
+ *
+ * DECAY-STATS:
+ *   novelty_decay: count of novelty decay applications
+ *   fresh_boost: count of fresh input boosts
+ *   stale_penalty: count of stale input penalties
+ *   diminishing: count of diminishing returns penalties
+ *   depth_penalty: count of depth-based penalties
+ *   corpus_count: current corpus size (number of inputs)
+ *   global_avg_energy: global average energy
+ *
+ * HEALTH-STATS:
+ *   exec_avg_us: average execution time in microseconds
+ *   exec_max_us: maximum execution time in microseconds
+ *   slow_execs: count of slow executions
+ *   mut_hit_rate_pct: mutation hit rate percentage (mutations that found new coverage)
+ *   plateau_secs: seconds since last new coverage (coverage plateau)
+ *   queue_wraps: number of times corpus queue wrapped
+ *   max_depth: maximum mutation depth in corpus
+ *
+ * DIFF-FUZZ-STATS:
+ *   unique_crashes: count of unique crashes
+ *   total_crashes: total crash count
+ *   timeouts: count of timeouts
+ *   fertile_boosts: differential fuzzing fertile lineage boosts
+ *   saturated: count of saturated lineages
+ *   explore_selects: exploration mode selections
+ *   secs_since_crash: seconds since last crash
+ *   stagnation_secs: seconds of coverage stagnation
+ *   corpus_growth: corpus inputs added since last log
+ */
+void hfuzz_metrics_log_stats(
+    /* EXECUTION COUNT (for timeseries rate calculation) */
+    uint64_t total_executions,
+    /* COVERAGE METRICS (for complete timeseries data) */
+    uint64_t coverage_pcs,
+    uint64_t coverage_edges,
+    /* SCHED-STATS */
+    uint64_t sched_total,
+    float repeat_pct,
+    float high_pct,
+    float low_pct,
+    float phase2_pct,
+    uint64_t avg_energy,
+    float avg_iters,
+    uint64_t max_iters,
+    uint64_t energy_min,
+    uint64_t energy_max,
+    /* DECAY-STATS */
+    uint64_t novelty_decay,
+    uint64_t fresh_boost,
+    uint64_t stale_penalty,
+    uint64_t diminishing,
+    uint64_t depth_penalty,
+    uint64_t corpus_count,
+    uint64_t global_avg_energy,
+    /* HEALTH-STATS */
+    uint64_t exec_avg_us,
+    uint64_t exec_max_us,
+    uint64_t slow_execs,
+    float mut_hit_rate_pct,
+    uint64_t plateau_secs,
+    uint64_t queue_wraps,
+    uint32_t max_depth,
+    /* DIFF-FUZZ-STATS */
+    uint64_t unique_crashes,
+    uint64_t total_crashes,
+    uint64_t timeouts,
+    uint64_t fertile_boosts,
+    uint64_t saturated,
+    uint64_t explore_selects,
+    uint64_t secs_since_crash,
+    uint64_t stagnation_secs,
+    uint64_t corpus_growth
+);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

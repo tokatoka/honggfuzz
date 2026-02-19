@@ -372,6 +372,7 @@ static bool subproc_New(run_t* run) {
     run->pid = arch_fork(run);
     if (run->pid == -1) {
         PLOG_E("Couldn't fork");
+        ATOMIC_POST_INC(run->global->cnts.forkFailures);
         run->pid = 0;
         return false;
     }
@@ -559,8 +560,8 @@ void subproc_checkTimeLimit(run_t* run) {
             
             /* Only save if file doesn't already exist (deduplication by hash) */
             if (!files_exists(timeoutFileName)) {
-                if (files_writeBufToFile(timeoutFileName, run->dynfile->data, run->dynfile->size,
-                        O_CREAT | O_EXCL | O_WRONLY)) {
+                /* Use atomic write to ensure file appears fully formed */
+                if (files_writeBufToFileAtomic(timeoutFileName, run->dynfile->data, run->dynfile->size)) {
                     LOG_I("Timeout: saved as '%s'", timeoutFileName);
                 } else {
                     LOG_W("Couldn't save timeout input to '%s'", timeoutFileName);
