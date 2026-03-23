@@ -452,14 +452,17 @@ static void commonPostOpts(int* j, char** args) {
                 args[(*j)++] = "-fno-sanitize=fuzzer";
                 args[(*j)++] = "-fno-sanitize=fuzzer-no-link";
             }
-            args[(*j)++] = "-fsanitize-coverage=trace-pc-guard,pc-table,trace-cmp,trace-div,indirect-calls,"
-                           "trace-gep,stack-depth";
+            /* Both trace-pc-guard and inline-8bit-counters for full coverage.
+             * stack-depth OMITTED: it uses __sancov_lowest_stack with initial-exec
+             * TLS, setting DF_STATIC_TLS which crashes dlopen on glibc 2.34. */
+            args[(*j)++] = "-fsanitize-coverage=trace-pc-guard,inline-8bit-counters,pc-table,"
+                           "trace-cmp,trace-div,indirect-calls,trace-gep";
         } else {
             args[(*j)++] = "-fno-sanitize-coverage=trace-pc-guard";
             args[(*j)++] = "-fno-sanitize=fuzzer";
             args[(*j)++] = "-fsanitize=fuzzer-no-link";
             args[(*j)++] =
-                "-fsanitize-coverage=trace-cmp,trace-div,indirect-calls,trace-gep,stack-depth";
+                "-fsanitize-coverage=trace-cmp,trace-div,indirect-calls,trace-gep";
         }
     }
 }
