@@ -36,6 +36,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #include "arch.h"
@@ -578,6 +579,214 @@ void subproc_checkTermination(run_t* run) {
         LOG_D("Killing pid=%d", (int)run->pid);
         kill(-(run->pid), SIGKILL);
         kill(run->pid, SIGKILL);
+    }
+}
+
+/* ---- Host + cgroup memory monitoring (shared across threads) ---- */
+static pthread_once_t rss_init_once = PTHREAD_ONCE_INIT;
+static int64_t rss_host_total_bytes = 0;
+static bool    rss_cgroup_available = false;
+static char    rss_cg_current_path[PATH_MAX];
+static char    rss_cg_max_path[PATH_MAX];
+static int64_t rss_cg_max_bytes = 0;
+
+static int64_t subproc_readInt64FromFile(const char* path) {
+    FILE* f = fopen(path, "r");
+    if (!f) return -1;
+    char buf[64];
+    int64_t val = -1;
+    if (fgets(buf, sizeof(buf), f)) {
+        if (strncmp(buf, "max", 3) != 0) {
+            char* endptr;
+            val = strtoll(buf, &endptr, 10);
+            if (endptr == buf) {
+                val = -1;
+            }
+        }
+    }
+    fclose(f);
+    return val;
+}
+
+static void subproc_rssInit(void) {
+    /* Host total memory from /proc/meminfo */
+    FILE* f = fopen("/proc/meminfo", "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            int64_t val;
+            if (sscanf(line, "MemTotal: %" PRId64 " kB", &val) == 1) {
+                ATOMIC_SET(rss_host_total_bytes, val * 1024);
+                break;
+            }
+        }
+        fclose(f);
+    }
+
+    /* Cgroup v2: /proc/self/cgroup -> "0::/path" */
+    f = fopen("/proc/self/cgroup", "r");
+    if (f) {
+        char line[PATH_MAX];
+        char cg_path[PATH_MAX] = "";
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, "0::", 3) == 0) {
+                char* nl = strchr(line + 3, '\n');
+                if (nl) *nl = '\0';
+                snprintf(cg_path, sizeof(cg_path), "%s", line + 3);
+                break;
+            }
+        }
+        fclose(f);
+
+        if (cg_path[0] != '\0') {
+            snprintf(rss_cg_current_path, sizeof(rss_cg_current_path),
+                     "/sys/fs/cgroup%s/memory.current", cg_path);
+            snprintf(rss_cg_max_path, sizeof(rss_cg_max_path),
+                     "/sys/fs/cgroup%s/memory.max", cg_path);
+
+            int64_t cg_max = subproc_readInt64FromFile(rss_cg_max_path);
+            if (cg_max > 0) {
+                __atomic_store_n(&rss_cg_max_bytes, cg_max, __ATOMIC_RELEASE);
+                __atomic_store_n(&rss_cgroup_available, true, __ATOMIC_RELEASE);
+            }
+
+            LOG_I("RSS monitor: host_total=%" PRId64 " MB, cgroup_max=%" PRId64 " MB",
+                  ATOMIC_GET(rss_host_total_bytes) / (1024 * 1024),
+                  cg_max > 0 ? cg_max / (1024 * 1024) : (int64_t)0);
+        }
+    }
+}
+
+static int64_t subproc_readHostAvailable(void) {
+    FILE* f = fopen("/proc/meminfo", "r");
+    if (!f) return -1;
+    char line[256];
+    int64_t val = -1;
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "MemAvailable: %" PRId64 " kB", &val) == 1) {
+            val *= 1024; /* kB -> bytes */
+            break;
+        }
+    }
+    fclose(f);
+    return val;
+}
+
+static int64_t subproc_readChildRss(pid_t pid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/statm", (int)pid);
+    FILE* f = fopen(path, "r");
+    if (!f) return -1;
+    unsigned long virt, rss;
+    int ret = fscanf(f, "%lu %lu", &virt, &rss);
+    fclose(f);
+    return (ret == 2) ? (int64_t)rss * getpagesize() : -1;
+}
+
+void subproc_checkRssLimit(run_t* run) {
+    if (!run->pid) {
+        return;
+    }
+
+    /* One-time init (pthread_once handles thread-safety and visibility) */
+    pthread_once(&rss_init_once, subproc_rssInit);
+
+    int64_t child_rss = subproc_readChildRss(run->pid);
+    if (child_rss < 0) {
+        return;
+    }
+
+    bool should_kill = false;
+    bool is_hard_cap = false;
+    bool is_cgroup_pressure = false;
+    const char* reason = NULL;
+    int64_t limit_bytes = 0;
+
+    int64_t host_total = ATOMIC_GET(rss_host_total_bytes);
+    int nthreads = (int)run->global->threads.threadsMax;
+    if (nthreads < 1) nthreads = 1;
+
+    /* --- Layer 1: Host-level MemAvailable pressure --- */
+    if (host_total > 0) {
+        int64_t host_avail = subproc_readHostAvailable();
+        if (host_avail >= 0 && host_avail < host_total / 10) {
+            /* Host below 10% available. Kill children above per-core fair share. */
+            long nproc = sysconf(_SC_NPROCESSORS_ONLN);
+            if (nproc < 1) nproc = 1;
+            int64_t per_core_fair = (host_total * 9 / 10) / nproc;
+            if (child_rss > per_core_fair) {
+                should_kill = true;
+                reason = "host memory pressure";
+                limit_bytes = per_core_fair;
+            }
+        }
+    }
+
+    /* --- Layer 2: Cgroup pressure (catches runaway before SIGBUS) --- */
+    if (!should_kill && ATOMIC_GET(rss_cgroup_available)) {
+        int64_t cg_max = ATOMIC_GET(rss_cg_max_bytes);
+        int64_t cg_current = subproc_readInt64FromFile(rss_cg_current_path);
+        if (cg_current >= 0 && cg_max > 0 && cg_current > cg_max * 9 / 10) {
+            /* Cgroup above 90%. Kill children above their fair share. */
+            int64_t cg_fair = cg_max / nthreads;
+            if (child_rss > cg_fair) {
+                should_kill = true;
+                is_cgroup_pressure = true;
+                reason = "cgroup memory pressure";
+                limit_bytes = cg_fair;
+            }
+        }
+    }
+
+    /* --- Layer 3: Per-process hard cap (catches individual leaks) --- */
+    if (!should_kill && run->global->exe.rssLimit) {
+        int64_t hard_cap = (int64_t)run->global->exe.rssLimit * 1024 * 1024;
+        if (child_rss > hard_cap) {
+            should_kill = true;
+            is_hard_cap = true;
+            reason = "per-process RSS hard cap";
+            limit_bytes = hard_cap;
+        }
+    }
+
+    /* --- Debounce: 3 consecutive violations (~300ms) ---
+     * Skip debounce for Layer 2 (cgroup pressure) — the system is near the
+     * hard limit and every 100ms of delay risks SIGBUS. */
+    if (should_kill) {
+        run->rssExceedCount++;
+        if (!is_cgroup_pressure && run->rssExceedCount < 3) {
+            return;
+        }
+
+        LOG_W("pid=%d RSS=%" PRId64 " MB > limit=%" PRId64 " MB (%s). Killing.",
+              (int)run->pid, child_rss / (1024 * 1024),
+              limit_bytes / (1024 * 1024), reason);
+
+        /* Layer 3 (hard cap) = the input caused a real OOM bug in the target.
+         * Save it as an artifact for reproducibility.
+         * Layers 1-2 = infrastructure pressure -- don't save. */
+        if (is_hard_cap && run->dynfile && run->dynfile->data && run->dynfile->size > 0) {
+            char oomFileName[PATH_MAX];
+            uint64_t inputHash = util_hash((const char*)run->dynfile->data, run->dynfile->size);
+            snprintf(oomFileName, sizeof(oomFileName),
+                "%s/OOM.%zu.%" PRIx64 ".%s",
+                run->global->io.crashDir, run->dynfile->size, inputHash,
+                run->global->io.fileExtn);
+            if (!files_exists(oomFileName)) {
+                if (files_writeBufToFileAtomic(oomFileName, run->dynfile->data, run->dynfile->size)) {
+                    LOG_I("OOM: saved triggering input as '%s'", oomFileName);
+                } else {
+                    LOG_W("Couldn't save OOM input to '%s'", oomFileName);
+                }
+            }
+        }
+
+        kill(-(run->pid), SIGKILL);
+        kill(run->pid, SIGKILL);
+        run->rssExceedCount = 0;
+        ATOMIC_POST_INC(run->global->cnts.rssKilledCnt);
+    } else {
+        run->rssExceedCount = 0;
     }
 }
 

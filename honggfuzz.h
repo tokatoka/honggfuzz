@@ -412,6 +412,7 @@ typedef struct {
         /* Sanity check counters (should all be 0 or very low) */
         size_t emptyQueueSelections;      /* Selected from empty queue */
         size_t forkFailures;              /* Fork syscall failures */
+        size_t rssKilledCnt;             /* Children killed for exceeding RSS limits */
         size_t persistentResets;          /* Persistent mode resets */
         size_t fileIOErrors;              /* File read/write failures */
     } cnts;
@@ -483,6 +484,7 @@ typedef struct {
     int          persistentSock;
     runState_t   runState;
     bool         tmOutSignaled;
+    int          rssExceedCount;    /* Consecutive RSS-over-limit checks (debounce) */
     char*        args[_HF_ARGS_MAX + 1];
     int          perThreadCovFeedbackFd;
     unsigned     triesLeft;
