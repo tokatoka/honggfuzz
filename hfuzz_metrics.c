@@ -31,7 +31,7 @@ typedef void (*log_full_coverage_fn)(const uint8_t*, uint64_t, const char*);
 typedef void (*register_coverage_feedback_fn)(const uint8_t*, void*);
 typedef void (*log_stats_fn)(
     uint64_t, /* total_executions */
-    uint64_t, uint64_t, /* coverage_pcs, coverage_edges */
+    uint64_t, uint64_t, uint64_t, uint64_t, /* coverage_pcs, coverage_edges, coverage_cmp, coverage_edge_bucket */
     uint64_t, float, float, float, float, uint64_t, float, uint64_t, uint64_t, uint64_t,
     uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
     uint64_t, uint64_t, uint64_t, float, uint64_t, uint64_t, uint32_t,
@@ -176,6 +176,8 @@ void hfuzz_metrics_log_stats(
     /* COVERAGE METRICS */
     uint64_t coverage_pcs,
     uint64_t coverage_edges,
+    uint64_t coverage_cmp,
+    uint64_t coverage_edge_bucket,
     /* SCHED-STATS */
     uint64_t sched_total,
     float repeat_pct,
@@ -217,7 +219,7 @@ void hfuzz_metrics_log_stats(
     if (fn_log_stats) {
         fn_log_stats(
             total_executions,
-            coverage_pcs, coverage_edges,
+            coverage_pcs, coverage_edges, coverage_cmp, coverage_edge_bucket,
             sched_total, repeat_pct, high_pct, low_pct, phase2_pct, avg_energy, avg_iters, max_iters, energy_min, energy_max,
             novelty_decay, fresh_boost, stale_penalty, diminishing, depth_penalty, corpus_count, global_avg_energy,
             exec_avg_us, exec_max_us, slow_execs, mut_hit_rate_pct, plateau_secs, queue_wraps, max_depth,

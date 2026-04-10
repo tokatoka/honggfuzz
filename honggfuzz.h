@@ -497,7 +497,7 @@ typedef struct {
        ClickHouse network I/O during startup. */
     bool         pendingStatsLog;
     struct {
-        uint64_t mutationsCnt, softCntPc, softCntEdge;
+        uint64_t mutationsCnt, softCntPc, softCntEdge, softCntCmp, softCntEdgeBucket;
         uint64_t total;
         float    repeatPct, highPct, lowPct, phase2Pct;
         uint64_t avgEnergy;

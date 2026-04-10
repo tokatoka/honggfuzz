@@ -1,0 +1,27 @@
+name: Build
+
+on:
+  push:
+    branches: [master-patches]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ make pkg-config libunwind-dev binutils-dev
+
+      - name: Build honggfuzz
+        run: make -j$(nproc)
+
+      - name: Build honggfuzz with metrics bridge
+        run: |
+          make clean
+          make -j$(nproc) SOLFUZZ_METRICS_ENABLED=1

@@ -227,6 +227,8 @@ void hfuzz_metrics_log_stats(
     /* COVERAGE METRICS (for complete timeseries data) */
     uint64_t coverage_pcs,
     uint64_t coverage_edges,
+    uint64_t coverage_cmp,
+    uint64_t coverage_edge_bucket,
     /* SCHED-STATS */
     uint64_t sched_total,
     float repeat_pct,

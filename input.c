@@ -800,6 +800,8 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                     run->statsSnapshot.mutationsCnt        = (uint64_t)ATOMIC_GET(hfuzz->cnts.mutationsCnt);
                     run->statsSnapshot.softCntPc           = (uint64_t)ATOMIC_GET(hfuzz->feedback.hwCnts.softCntPc);
                     run->statsSnapshot.softCntEdge         = (uint64_t)ATOMIC_GET(hfuzz->feedback.hwCnts.softCntEdge);
+                    run->statsSnapshot.softCntCmp          = (uint64_t)ATOMIC_GET(hfuzz->feedback.hwCnts.softCntCmp);
+                    run->statsSnapshot.softCntEdgeBucket   = (uint64_t)ATOMIC_GET(hfuzz->feedback.hwCnts.softCntEdgeBucket);
                     run->statsSnapshot.total               = (uint64_t)total;
                     run->statsSnapshot.repeatPct           = (float)((double)repeat * 100.0 / total);
                     run->statsSnapshot.highPct             = (float)((double)high * 100.0 / total);
@@ -881,7 +883,7 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
         run->pendingStatsLog = false;
         const __typeof__(run->statsSnapshot)* s = &run->statsSnapshot;
         hfuzz_metrics_log_stats(
-            s->mutationsCnt, s->softCntPc, s->softCntEdge,
+            s->mutationsCnt, s->softCntPc, s->softCntEdge, s->softCntCmp, s->softCntEdgeBucket,
             s->total, s->repeatPct, s->highPct, s->lowPct, s->phase2Pct,
             s->avgEnergy, s->avgIters, s->maxIters, s->eMin, s->eMax,
             s->noveltyDecay, s->freshBoost, s->stalePenalty, s->diminishing,

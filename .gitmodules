@@ -6,3 +6,9 @@
 	path = third_party/android/libunwind
 	url = https://github.com/libunwind/libunwind.git
 	branch = v1.6.2
+[submodule "third_party/rapidjson"]
+	path = third_party/rapidjson
+	url = https://github.com/Tencent/rapidjson.git
+[submodule "third_party/clickhouse-cpp"]
+	path = third_party/clickhouse-cpp
+	url = https://github.com/ClickHouse/clickhouse-cpp.git

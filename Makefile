@@ -36,14 +36,48 @@ GREP_COLOR ?=
 BUILD_OSSFUZZ_STATIC ?= false # for https://github.com/google/oss-fuzz
 BUILD_LINUX_NO_BFD ?= false # for users who don't want to use libbfd/binutils
 
-# Metrics bridge integration for solfuzz ClickHouse logging
-# Set SOLFUZZ_METRICS_BRIDGE_DIR to the solfuzz build directory containing libhfuzz_metrics_bridge.so
-# Example: make SOLFUZZ_METRICS_BRIDGE_DIR=/data/cmoyes/solfuzz/build-hf
-ifdef SOLFUZZ_METRICS_BRIDGE_DIR
-    COMMON_LDFLAGS += -L$(SOLFUZZ_METRICS_BRIDGE_DIR) -lhfuzz_metrics_bridge
-    COMMON_LDFLAGS += -Wl,-rpath,$(SOLFUZZ_METRICS_BRIDGE_DIR)
-    COMMON_LDFLAGS += -lstdc++
-    $(info Honggfuzz: Linking against solfuzz metrics bridge at $(SOLFUZZ_METRICS_BRIDGE_DIR))
+# Inline metrics: compile the ClickHouse/JSONL metrics bridge directly into honggfuzz.
+# Set SOLFUZZ_METRICS_ENABLED=1 to build with metrics support.
+# Required: RAPIDJSON_DIR (path to rapidjson repo root, for -I$(RAPIDJSON_DIR)/include)
+# Optional: CLICKHOUSE_CPP_DIR (path to clickhouse-cpp repo root, for ClickHouse backend)
+#           SOLFUZZ_DEPS_PREFIX (path to deps install prefix for OpenSSL/ABSL headers+libs)
+#
+# Example (JSONL-only):
+#   make SOLFUZZ_METRICS_ENABLED=1
+# Example (JSONL + ClickHouse):
+#   make SOLFUZZ_METRICS_ENABLED=1 SOLFUZZ_CLICKHOUSE_ENABLED=1
+CXX ?= g++
+RAPIDJSON_DIR ?= third_party/rapidjson
+CLICKHOUSE_CPP_DIR ?= third_party/clickhouse-cpp
+METRICS_CXXFLAGS := -std=c++23 -fPIC -fno-omit-frame-pointer -O2 -g -I. -DSOLFUZZ_SHARED_LIB=1
+
+ifeq ($(SOLFUZZ_METRICS_ENABLED),1)
+    METRICS_SRCS := metrics/hfuzz_metrics_bridge.cxx \
+                    metrics/metrics_logger.cxx \
+                    metrics/jsonl_writer.cxx \
+                    metrics/fuzzing_session.cxx \
+                    metrics/coverage_symbolizer.cxx \
+                    metrics/fuzzer_corpus_collector.cxx
+    METRICS_OBJS := $(METRICS_SRCS:.cxx=.o)
+
+    ifdef RAPIDJSON_DIR
+        METRICS_CXXFLAGS += -I$(RAPIDJSON_DIR)/include
+    endif
+
+    ifeq ($(SOLFUZZ_CLICKHOUSE_ENABLED),1)
+        METRICS_CXXFLAGS += -DSOLFUZZ_CLICKHOUSE_ENABLED=1
+        ifdef CLICKHOUSE_CPP_DIR
+            METRICS_CXXFLAGS += -I$(CLICKHOUSE_CPP_DIR)
+        endif
+        ifdef SOLFUZZ_DEPS_PREFIX
+            METRICS_CXXFLAGS += -I$(SOLFUZZ_DEPS_PREFIX)/include
+            COMMON_LDFLAGS += -L$(SOLFUZZ_DEPS_PREFIX)/lib
+        endif
+        COMMON_LDFLAGS += -lclickhouse-cpp-lib -lssl -lcrypto -labsl_strings -labsl_throw_delegate
+    endif
+
+    COMMON_LDFLAGS += -lstdc++ -lpthread -ldl
+    $(info Honggfuzz: Building with inline metrics (SOLFUZZ_METRICS_ENABLED=1))
 endif
 
 REALOS = $(shell uname -s)
@@ -277,7 +311,7 @@ else
 endif
 
 
-SUBDIR_ROOTS := linux mac netbsd posix libhfuzz libhfcommon libhfnetdriver
+SUBDIR_ROOTS := linux mac netbsd posix libhfuzz libhfcommon libhfnetdriver metrics
 DIRS := . $(shell find $(SUBDIR_ROOTS) -type d)
 CLEAN_PATTERNS := *.o *~ core *.a *.dSYM *.la *.so *.dylib
 SUBDIR_GARBAGE := $(foreach DIR,$(DIRS),$(addprefix $(DIR)/,$(CLEAN_PATTERNS)))
@@ -320,6 +354,10 @@ honggfuzz.o: honggfuzz.c $(GIT_BUILDINFO_H)
 %.o: %.c
 	$(CC) -c $(CFLAGS) $(CFLAGS_BLOCKS) -o $@ $<
 
+# C++ compilation rule for metrics/ sources
+metrics/%.o: metrics/%.cxx
+	$(CXX) -c $(METRICS_CXXFLAGS) -o $@ $<
+
 mac/mach_exc.h mac/mach_excServer.c mac/mach_excServer.h mac/mach_excUser.c &:
 	mig -header mac/mach_exc.h -user mac/mach_excUser.c -sheader mac/mach_excServer.h \
 		-server mac/mach_excServer.c $(SDK)/usr/include/mach/mach_exc.defs
@@ -333,8 +371,8 @@ mac/arch.o: mac/arch.c mac/mach_exc.h mac/mach_excServer.h
 %.dylib: %.c
 	$(CC) -fPIC -shared $(CFLAGS) -o $@ $<
 
-$(BIN): $(OBJS) $(LCOMMON_ARCH)
-	$(LD) -o $(BIN) $(OBJS) $(LCOMMON_ARCH) $(LDFLAGS)
+$(BIN): $(OBJS) $(LCOMMON_ARCH) $(METRICS_OBJS)
+	$(LD) -o $(BIN) $(OBJS) $(METRICS_OBJS) $(LCOMMON_ARCH) $(LDFLAGS)
 
 $(HFUZZ_CC_BIN): $(LCOMMON_ARCH) $(LHFUZZ_ARCH) $(LNETDRIVER_ARCH) $(HFUZZ_CC_SRCS)
 	$(LD) -o $@ $(HFUZZ_CC_SRCS) $(LCOMMON_ARCH) $(LDFLAGS) $(CFLAGS) $(CFLAGS_BLOCKS) -D_HFUZZ_INC_PATH=$(HFUZZ_INC)
