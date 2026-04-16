@@ -545,20 +545,20 @@ void subproc_checkTimeLimit(run_t* run) {
         ATOMIC_POST_INC(run->global->cnts.timeoutedCnt);
 
         /* Log hang metrics (optional - weak symbol, no-op if not overridden) */
-        hfuzz_metrics_log_hang(run->dynfile->size, 
+        hfuzz_metrics_log_hang(run->dynfile->size,
                                 (uint64_t)(run->global->timing.tmOut * 1000));
 
         /* Save the timeout input as a bug artifact */
         if (run->dynfile && run->dynfile->data && run->dynfile->size > 0) {
             char timeoutFileName[PATH_MAX];
             uint64_t inputHash = util_hash((const char*)run->dynfile->data, run->dynfile->size);
-            
+
             /* Use unique filename: TIMEOUT.SIZE.HASH.fuzz */
             snprintf(timeoutFileName, sizeof(timeoutFileName),
                 "%s/TIMEOUT.%zu.%" PRIx64 ".%s",
                 run->global->io.crashDir, run->dynfile->size, inputHash,
                 run->global->io.fileExtn);
-            
+
             /* Only save if file doesn't already exist (deduplication by hash) */
             if (!files_exists(timeoutFileName)) {
                 /* Use atomic write to ensure file appears fully formed */
@@ -582,6 +582,7 @@ void subproc_checkTermination(run_t* run) {
     }
 }
 
+#ifdef CHECK_RSS_LIMIT
 /* ---- Host + cgroup memory monitoring (shared across threads) ---- */
 static pthread_once_t rss_init_once = PTHREAD_ONCE_INIT;
 static int64_t rss_host_total_bytes = 0;
@@ -607,6 +608,7 @@ static int64_t subproc_readInt64FromFile(const char* path) {
     fclose(f);
     return val;
 }
+
 
 static void subproc_rssInit(void) {
     /* Host total memory from /proc/meminfo */
@@ -789,6 +791,7 @@ void subproc_checkRssLimit(run_t* run) {
         run->rssExceedCount = 0;
     }
 }
+#endif
 
 bool subproc_runThread(
     honggfuzz_t* hfuzz, pthread_t* thread, void* (*thread_func)(void*), bool joinable) {
