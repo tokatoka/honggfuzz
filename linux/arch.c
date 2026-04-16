@@ -251,7 +251,9 @@ void arch_reapChild(run_t* run) {
         }
 
         subproc_checkTimeLimit(run);
+        #ifdef CHECK_RSS_LIMIT
         subproc_checkRssLimit(run);
+        #endif
         subproc_checkTermination(run);
 
         const struct timespec ts = {

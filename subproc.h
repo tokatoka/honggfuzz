@@ -43,7 +43,9 @@ extern uint8_t subproc_System(run_t* run, const char* const argv[]);
 
 extern void subproc_checkTimeLimit(run_t* run);
 
+#ifdef CHECK_RSS_LIMIT
 extern void subproc_checkRssLimit(run_t* run);
+#endif
 
 extern void subproc_checkTermination(run_t* run);
 
