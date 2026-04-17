@@ -21,7 +21,7 @@ WARNINGS=0
 # Build test targets if needed
 echo "1. Building test targets..."
 if [ ! -f tests/test_target_pcguard ]; then
-    ./hfuzz_cc/hfuzz-cc -fsanitize-coverage=trace-pc-guard,trace-cmp \
+    ./hfuzz_cc/hfuzz-cc -fsanitize-coverage=trace-pc-guard,inline-8bit-counters,trace-cmp \
         -o tests/test_target_pcguard tests/test_target.c
 fi
 if [ ! -f tests/test_target_8bit ]; then

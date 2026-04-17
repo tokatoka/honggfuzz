@@ -39,6 +39,10 @@
 #include <sys/procctl.h>
 #endif
 
+#if defined(_HF_ARCH_LINUX)
+#include <ucontext.h>
+#endif
+
 #include "cmdline.h"
 #include "dict.h"
 #include "display.h"
@@ -66,6 +70,81 @@ static bool clearWin    = false;
  */
 honggfuzz_t hfuzz;
 
+/*
+ * atexit handler: dump diagnostic context on non-zero exit (exit code 1
+ * from LOG_F, etc.) so the worker log shows WHY honggfuzz died.
+ */
+static void atexitDiagnostics(void) {
+    /* Only dump on abnormal exit. We check sigReceived to skip clean
+     * shutdown (SIGTERM/SIGINT) which also calls exit(). */
+    if (ATOMIC_GET(sigReceived) != 0) {
+        return; /* Clean shutdown via SIGTERM/SIGINT, no diagnostics needed */
+    }
+
+    /* Read cgroup memory state */
+    int64_t cg_cur = -1, cg_max = -1;
+    FILE* cgf = fopen("/proc/self/cgroup", "r");
+    if (cgf) {
+        char cgline[PATH_MAX];
+        char cgpath[PATH_MAX] = "";
+        while (fgets(cgline, sizeof(cgline), cgf)) {
+            if (strncmp(cgline, "0::", 3) == 0) {
+                char* nl = strchr(cgline + 3, '\n');
+                if (nl) *nl = '\0';
+                snprintf(cgpath, sizeof(cgpath), "%s", cgline + 3);
+                break;
+            }
+        }
+        fclose(cgf);
+        if (cgpath[0] != '\0') {
+            char path[PATH_MAX];
+            FILE* f;
+            int64_t v;
+            snprintf(path, sizeof(path), "/sys/fs/cgroup%s/memory.current", cgpath);
+            if ((f = fopen(path, "r")) != NULL) {
+                if (fscanf(f, "%" PRId64, &v) == 1) cg_cur = v / (1024 * 1024);
+                fclose(f);
+            }
+            snprintf(path, sizeof(path), "/sys/fs/cgroup%s/memory.max", cgpath);
+            if ((f = fopen(path, "r")) != NULL) {
+                if (fscanf(f, "%" PRId64, &v) == 1) cg_max = v / (1024 * 1024);
+                fclose(f);
+            }
+        }
+    }
+
+    /* Read host MemAvailable */
+    int64_t host_avail = -1;
+    FILE* mi = fopen("/proc/meminfo", "r");
+    if (mi) {
+        char mline[256];
+        while (fgets(mline, sizeof(mline), mi)) {
+            int64_t v;
+            if (sscanf(mline, "MemAvailable: %" PRId64 " kB", &v) == 1) {
+                host_avail = v / 1024;
+                break;
+            }
+        }
+        fclose(mi);
+    }
+
+    fprintf(stderr,
+        "\n"
+        "================================================================\n"
+        "honggfuzz parent exiting abnormally (pid=%d)\n"
+        "  cgroup memory: %" PRId64 " / %" PRId64 " MB\n"
+        "  host available: %" PRId64 " MB\n"
+        "  mutations: %" PRIu64 ", crashes: %" PRIu64 "\n"
+        "  persistent resets: %" PRIu64 "\n"
+        "================================================================\n",
+        (int)getpid(),
+        cg_cur, cg_max,
+        host_avail,
+        (uint64_t)ATOMIC_GET(hfuzz.cnts.mutationsCnt),
+        (uint64_t)ATOMIC_GET(hfuzz.cnts.crashesCnt),
+        (uint64_t)ATOMIC_GET(hfuzz.cnts.persistentResets));
+}
+
 static void exitWithMsg(const char* msg, int exit_code) {
     HF_ATTR_UNUSED ssize_t sz = write(STDERR_FILENO, msg, strlen(msg));
     for (;;) {
@@ -74,6 +153,116 @@ static void exitWithMsg(const char* msg, int exit_code) {
         abort();
         __builtin_trap();
     }
+}
+
+/*
+ * Diagnostic handler for fatal signals (SIGBUS, SIGSEGV, SIGABRT, SIGFPE,
+ * SIGILL) in the honggfuzz parent process.  Logs the faulting address,
+ * signal code, and instruction pointer before re-raising so a core dump
+ * is produced.  Uses only async-signal-safe calls.
+ */
+static const char* fatalSigCodeStr(int sig, int code) {
+    if (sig == SIGBUS) {
+        switch (code) {
+        case BUS_ADRALN: return "BUS_ADRALN (alignment)";
+        case BUS_ADRERR: return "BUS_ADRERR (nonexistent phys addr)";
+        case BUS_OBJERR: return "BUS_OBJERR (object-specific hw error)";
+#ifdef BUS_MCEERR_AR
+        case BUS_MCEERR_AR: return "BUS_MCEERR_AR (hw memory error, action required)";
+#endif
+#ifdef BUS_MCEERR_AO
+        case BUS_MCEERR_AO: return "BUS_MCEERR_AO (hw memory error, action optional)";
+#endif
+        default: return "unknown";
+        }
+    }
+    if (sig == SIGSEGV) {
+        switch (code) {
+        case SEGV_MAPERR: return "SEGV_MAPERR (address not mapped)";
+        case SEGV_ACCERR: return "SEGV_ACCERR (invalid permissions)";
+#ifdef SEGV_BNDERR
+        case SEGV_BNDERR: return "SEGV_BNDERR (bounds check fail)";
+#endif
+#ifdef SEGV_PKUERR
+        case SEGV_PKUERR: return "SEGV_PKUERR (protection key fault)";
+#endif
+        default: return "unknown";
+        }
+    }
+    if (sig == SIGFPE) {
+        switch (code) {
+        case FPE_INTDIV: return "FPE_INTDIV (integer divide by zero)";
+        case FPE_INTOVF: return "FPE_INTOVF (integer overflow)";
+        case FPE_FLTDIV: return "FPE_FLTDIV (float divide by zero)";
+        case FPE_FLTOVF: return "FPE_FLTOVF (float overflow)";
+        case FPE_FLTUND: return "FPE_FLTUND (float underflow)";
+        default: return "unknown";
+        }
+    }
+    if (sig == SIGILL) {
+        switch (code) {
+        case ILL_ILLOPC: return "ILL_ILLOPC (illegal opcode)";
+        case ILL_ILLOPN: return "ILL_ILLOPN (illegal operand)";
+        case ILL_PRVOPC: return "ILL_PRVOPC (privileged opcode)";
+        default: return "unknown";
+        }
+    }
+    return "unknown";
+}
+
+static const char* fatalSigName(int sig) {
+    switch (sig) {
+    case SIGBUS:  return "SIGBUS";
+    case SIGSEGV: return "SIGSEGV";
+    case SIGABRT: return "SIGABRT";
+    case SIGFPE:  return "SIGFPE";
+    case SIGILL:  return "SIGILL";
+    default:      return "UNKNOWN";
+    }
+}
+
+static void fatalSignalHandler(int sig, siginfo_t* si, void* ucontext) {
+    /* Get instruction pointer from ucontext */
+    uintptr_t pc = 0;
+#if defined(_HF_ARCH_LINUX) && defined(__x86_64__)
+    ucontext_t* uc = (ucontext_t*)ucontext;
+    if (uc) {
+        pc = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+    }
+#elif defined(_HF_ARCH_LINUX) && defined(__aarch64__)
+    ucontext_t* uc = (ucontext_t*)ucontext;
+    if (uc) {
+        pc = (uintptr_t)uc->uc_mcontext.pc;
+    }
+#else
+    (void)ucontext;
+#endif
+
+    dprintf(STDERR_FILENO,
+        "\n\n"
+        "================================================================\n"
+        "FATAL %s in honggfuzz parent process (pid=%d)\n"
+        "  si_addr  = %p (faulting address)\n"
+        "  si_code  = %d (%s)\n"
+        "  RIP/PC   = 0x%lx\n"
+        "================================================================\n"
+        "Re-raising for core dump. If no core is produced, check:\n"
+        "  ulimit -c unlimited\n"
+        "  kernel.core_pattern\n"
+        "  HF_DONTDUMP=0 (includes shared memory in core)\n"
+        "================================================================\n\n",
+        fatalSigName(sig),
+        (int)getpid(),
+        si->si_addr,
+        si->si_code, fatalSigCodeStr(sig, si->si_code),
+        (unsigned long)pc);
+
+    /* Re-raise with default handler so the kernel produces a core dump */
+    struct sigaction sa_default;
+    memset(&sa_default, 0, sizeof(sa_default));
+    sa_default.sa_handler = SIG_DFL;
+    sigaction(sig, &sa_default, NULL);
+    raise(sig);
 }
 
 static void sigHandler(int sig) {
@@ -181,6 +370,24 @@ static void setupSignalsPreThreads(void) {
     if (sigaction(SIGWINCH, &sa, NULL) == -1) {
         PLOG_F("sigaction(SIGWINCH) failed");
     }
+
+    /* Register SA_SIGINFO handlers for fatal signals to capture faulting
+     * address and instruction pointer before dying.  These are synchronous
+     * (delivered on the faulting thread) so they bypass sigprocmask. */
+    {
+        struct sigaction sa_fatal;
+        memset(&sa_fatal, 0, sizeof(sa_fatal));
+        sa_fatal.sa_sigaction = fatalSignalHandler;
+        sa_fatal.sa_flags     = SA_SIGINFO;
+        sigemptyset(&sa_fatal.sa_mask);
+
+        const int fatal_sigs[] = {SIGBUS, SIGSEGV, SIGABRT, SIGFPE, SIGILL};
+        for (size_t i = 0; i < sizeof(fatal_sigs) / sizeof(fatal_sigs[0]); i++) {
+            if (sigaction(fatal_sigs[i], &sa_fatal, NULL) == -1) {
+                PLOG_F("sigaction(%s) failed", fatalSigName(fatal_sigs[i]));
+            }
+        }
+    }
 }
 
 static void setupSignalsMainThread(void) {
@@ -272,6 +479,8 @@ static uint8_t mainThreadLoop(honggfuzz_t* hfuzz) {
     setupSignalsMainThread();
     setupMainThreadTimer();
 
+    const size_t threadsTotal = hfuzz->threads.threadsMax;
+
     uint64_t dynamicQueuePollTime = time(NULL);
     for (;;) {
         if (hfuzz->io.dynamicInputDir && time(NULL) - dynamicQueuePollTime > _HF_SYNC_TIME) {
@@ -291,7 +500,7 @@ static uint8_t mainThreadLoop(honggfuzz_t* hfuzz) {
                 strsignal(ATOMIC_GET(sigReceived)));
             break;
         }
-        if (ATOMIC_GET(hfuzz->threads.threadsFinished) >= hfuzz->threads.threadsMax) {
+        if (ATOMIC_GET(hfuzz->threads.threadsFinished) >= threadsTotal) {
             break;
         }
         if (hfuzz->timing.runEndTime > 0 && (time(NULL) > hfuzz->timing.runEndTime)) {
@@ -311,7 +520,7 @@ static uint8_t mainThreadLoop(honggfuzz_t* hfuzz) {
     fuzz_setTerminating();
 
     for (;;) {
-        if (ATOMIC_GET(hfuzz->threads.threadsFinished) >= hfuzz->threads.threadsMax) {
+        if (ATOMIC_GET(hfuzz->threads.threadsFinished) >= threadsTotal) {
             break;
         }
         pingThreads(hfuzz);
@@ -370,6 +579,8 @@ static const char* getGitCommitTitle() {
 }
 
 int main(int argc, char** argv) {
+    atexit(atexitDiagnostics);
+
     LOG_I("Build info: commit:%s branch:'%s' author:'%s' title:'%s'",
         getGitCommitHash(), getGitCommitBranch(), getGitCommitAuthor(), getGitCommitTitle());
 
@@ -566,21 +777,21 @@ int main(int argc, char** argv) {
         if (hfuzz.feedback.covFeedbackMap) {
             uint64_t guardNb = atomic_load_explicit(
                 &hfuzz.feedback.covFeedbackMap->guardNb, memory_order_relaxed);
-            
+
             /* Generate output path for JSON coverage report if coverage dir is set */
             char coverage_path[PATH_MAX] = {0};
             if (hfuzz.io.covDirNew) {
-                snprintf(coverage_path, sizeof(coverage_path), 
+                snprintf(coverage_path, sizeof(coverage_path),
                          "%s/coverage_report.json", hfuzz.io.covDirNew);
             }
-            
+
             hfuzz_metrics_log_full_coverage_report(
                 hfuzz.feedback.covFeedbackMap->pcGuardMap,
                 guardNb,
                 coverage_path[0] ? coverage_path : NULL);
         }
-        
-        const char* status = (hfuzz.cfg.exitUponCrash && ATOMIC_GET(hfuzz.cnts.crashesCnt) > 0) 
+
+        const char* status = (hfuzz.cfg.exitUponCrash && ATOMIC_GET(hfuzz.cnts.crashesCnt) > 0)
                              ? "crashed" : "completed";
         hfuzz_metrics_session_end(status,
                                    hfuzz.cnts.mutationsCnt,

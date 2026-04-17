@@ -33,7 +33,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "1. Building test target with instrumentation..."
-./hfuzz_cc/hfuzz-cc -fsanitize-coverage=trace-pc-guard,trace-cmp \
+./hfuzz_cc/hfuzz-cc -fsanitize-coverage=trace-pc-guard,inline-8bit-counters,trace-cmp \
     -o tests/test_target tests/test_target.c
 echo -e "${GREEN}   [OK] Test target built${NC}"
 echo ""
@@ -84,6 +84,38 @@ FINAL_EDGES=$(grep -oP "edge: \K[0-9,]+" "$TEST_DIR/fuzz.log" | tail -1 | tr -d 
 if [ -n "$FINAL_EDGES" ]; then
     echo "   Final edge count: $FINAL_EDGES"
     echo -e "${GREEN}   [OK] Coverage tracking working${NC}"
+fi
+
+# Verify all coverage signals are wired and firing
+if grep -q "(i/b/h/e/p/c/eb)" "$TEST_DIR/fuzz.log" 2>/dev/null; then
+    echo -e "${GREEN}   [OK] Log format contains (i/b/h/e/p/c/eb)${NC}"
+else
+    echo -e "${RED}   [FAIL] Log format missing (i/b/h/e/p/c/eb) -- edge bucket not wired${NC}"
+    ERROR_COUNT=$((ERROR_COUNT + 1))
+fi
+# Cur: fields are i/b/h/e/p/c/eb -- check cumulative edge (4th), cmp (6th), eb (7th)
+CUR_EDGE=$(grep -oP 'Cur:\K[0-9/]+' "$TEST_DIR/fuzz.log" 2>/dev/null | \
+    awk -F'/' '{print $4}' | sort -rn | head -1) || CUR_EDGE=0
+CUR_CMP=$(grep -oP 'Cur:\K[0-9/]+' "$TEST_DIR/fuzz.log" 2>/dev/null | \
+    awk -F'/' '{print $6}' | sort -rn | head -1) || CUR_CMP=0
+CUR_EB=$(grep -oP 'Cur:\K[0-9/]+' "$TEST_DIR/fuzz.log" 2>/dev/null | \
+    awk -F'/' '{print $7}' | sort -rn | head -1) || CUR_EB=0
+echo "   Coverage signals -- edge: ${CUR_EDGE:-0}, cmp: ${CUR_CMP:-0}, eb: ${CUR_EB:-0}"
+if [ "${CUR_EDGE:-0}" -gt 0 ] 2>/dev/null; then
+    echo -e "${GREEN}   [OK] Edge signal (pidNewEdge) firing${NC}"
+else
+    echo -e "${RED}   [FAIL] Edge signal is 0 -- pidNewEdge not reaching fuzz loop${NC}"
+    ERROR_COUNT=$((ERROR_COUNT + 1))
+fi
+if [ "${CUR_CMP:-0}" -gt 0 ] 2>/dev/null; then
+    echo -e "${GREEN}   [OK] CMP signal (pidNewCmp) firing${NC}"
+else
+    echo -e "${YELLOW}   [WARN] CMP signal is 0 (may need trace-cmp instrumentation)${NC}"
+fi
+if [ "${CUR_EB:-0}" -gt 0 ] 2>/dev/null; then
+    echo -e "${GREEN}   [OK] Edge bucket signal (pidEdgeBucketInc) firing${NC}"
+else
+    echo -e "${YELLOW}   [WARN] Edge bucket signal is 0 (may need longer run)${NC}"
 fi
 
 echo ""

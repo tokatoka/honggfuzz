@@ -320,7 +320,9 @@ static bool getLibPath(
 
     ptrdiff_t len   = (uintptr_t)end - (uintptr_t)start;
     uint64_t  crc64 = util_CRC64(start, len);
-    snprintf(path, PATH_MAX, "/tmp/%s.%d.%" PRIx64 ".a", name, geteuid(), crc64);
+    const char* tmpdir = getenv("TMPDIR");
+    if (!tmpdir) tmpdir = "/tmp";
+    snprintf(path, PATH_MAX, "%s/%s.%d.%" PRIx64 ".a", tmpdir, name, geteuid(), crc64);
 
     /* Does the library exist, belongs to the user, and is of expected size? */
     struct stat st;
@@ -329,8 +331,14 @@ static bool getLibPath(
     }
 
     /* If not, create it with atomic rename() */
-    char template[] = "/tmp/lib.honggfuzz.a.XXXXXX";
-    int  fd         = TEMP_FAILURE_RETRY(mkostemp(template, O_CLOEXEC));
+    char template[PATH_MAX];
+    int  template_len =
+        snprintf(template, sizeof(template), "%s/lib.honggfuzz.a.XXXXXX", tmpdir);
+    if (template_len < 0 || (size_t)template_len >= sizeof(template)) {
+        LOG_E("Temporary file template doesn't fit in buffer for TMPDIR='%s'", tmpdir);
+        return false;
+    }
+    int fd = TEMP_FAILURE_RETRY(mkostemp(template, O_CLOEXEC));
     if (fd == -1) {
         PLOG_E("mkostemp('%s')", template);
         return false;
@@ -609,7 +617,7 @@ static int ldMode(int argc, char** argv) {
      * symbols resolved via LD_PRELOAD at runtime (e.g. firedancer's .so)
      */
     bool skipLibhfuzz = getenv("HFUZZ_SKIP_LIBHFUZZ") != NULL;
-    
+
     if (!skipLibhfuzz) {
         /* Ensure to link libhfuzz to the fuzz test executable*/
         if (isExecutableBuild(argc, argv)) {

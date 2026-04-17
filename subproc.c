@@ -517,6 +517,12 @@ void subproc_checkTimeLimit(run_t* run) {
     if (!run->global->timing.tmOut) {
         return;
     }
+    /* During dry run we replay known corpus files under heavy load (all CPUs).
+     * Killing them on timeout wastes coverage and pollutes timeout counters.
+     * subproc_checkTermination still handles SIGINT/shutdown. */
+    if (ATOMIC_GET(run->global->feedback.state) == _HF_STATE_DYNAMIC_DRY_RUN) {
+        return;
+    }
 
     int64_t curUSecs  = util_timeNowUSecs();
     int64_t diffUSecs = curUSecs - run->timeStartedUSecs;

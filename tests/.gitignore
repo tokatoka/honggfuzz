@@ -2,4 +2,5 @@
 test_target
 test_target_8bit
 test_target_pcguard
+test_edge_bucket_target
 
