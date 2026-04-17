@@ -238,6 +238,21 @@ typedef struct {
     _Atomic uint32_t moduleRegistrationLock;  /* Simple spinlock for module registration */
     _Atomic uint32_t trackedModuleCount;
     trackedModule_t trackedModules[_HF_MAX_TRACKED_MODULES];
+    /* Mutation health counters -- per-thread slots (same pattern as pidNewPC etc.)
+       to avoid contention.  Each persistent child writes only to its own slot
+       (indexed by my_thread_no).  Parent sums across all slots for metrics. */
+    cntCacheLine_t pidProtoParseCallsCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidProtoParseSuccessesCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidCustomMutatorCallsCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidCustomMutatorSuccessesCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidInputsTruncatedCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidLpmMutateCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidLpmCrossOverCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidLpmParseFailCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidPostProcessorCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidElfFixupOkCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidExecFailCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidVerifyCnt[_HF_THREAD_MAX];
 } feedback_t;
 
 typedef struct {
@@ -273,6 +288,7 @@ typedef struct {
         size_t      testedFileCnt;
         const char* fileExtn;
         size_t      maxFileSz;
+        size_t      minFileSz;
         size_t      newUnitsAdded;
         char        workDir[PATH_MAX];
         const char* crashDir;
@@ -301,6 +317,7 @@ typedef struct {
         const char*        feedbackMutateCommand;
         bool               netDriver;
         bool               persistent;
+        bool               useCustomMutator;
         uint64_t           asLimit;
         uint64_t           rssLimit;
         uint64_t           dataLimit;
@@ -335,6 +352,9 @@ typedef struct {
             uint64_t tries;     /* Number of times this tier was used */
             uint64_t successes; /* Number of times it led to new coverage */
         } stats[4];             /* 0=data, 1=arith, 2=splice, 3=other */
+        uint64_t protoRoundCnt;   /* Rounds where format_override was proto/flatbuf */
+        uint64_t protoScanOkCnt;  /* proto_scan_fields returned >= 1 field */
+        uint64_t totalRoundCnt;   /* Total mangle_mangleContent calls */
     } mutate;
     struct {
         bool    useScreen;
@@ -513,6 +533,7 @@ typedef struct {
         uint64_t uniqueCrashes, totalCrashes, timeouts;
         uint64_t fertileBoosts, saturatedLineages, exploreSelects;
         uint64_t secsSinceCrash, stagnationSecs, corpusGrowth;
+        uint64_t inputsTruncatedTooLarge;
     } statsSnapshot;
 
     struct {

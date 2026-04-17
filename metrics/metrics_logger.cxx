@@ -198,7 +198,7 @@ void MetricsLogger::wait_for_queue_drain_() {
         std::cerr << "[MetricsLogger] Background logger thread joined" << std::endl;
     }
 
-    // Now safe to destroy the client — no other thread is using it
+    // Now safe to destroy the client -- no other thread is using it
     {
         std::lock_guard<std::mutex> lock(m_client_mutex);
         client_.reset();
@@ -414,7 +414,7 @@ bool MetricsLogger::insert_with_retry_(const std::string& table_name, void* bloc
     return false;
 }
 
-// Insert wrapper — moves the Block into a closure and enqueues it for async
+// Insert wrapper -- moves the Block into a closure and enqueues it for async
 // execution on the background logger thread.  This keeps ClickHouse I/O off
 // the fuzzing hot-path.
 void MetricsLogger::enqueue_insert_(const std::string& table_name, void* block_ptr, const std::string& operation_desc) {
@@ -918,7 +918,7 @@ void MetricsLogger::init(
     corpus_group_ = corpus_group;
     task_type_ = task_type;
 
-    // Vector JSONL output — works with or without SOLFUZZ_CLICKHOUSE_ENABLED.
+    // Vector JSONL output -- works with or without SOLFUZZ_CLICKHOUSE_ENABLED.
     if (getenv_or("SOLFUZZ_VECTOR_ENABLE", "0") == "1") {
         std::string sink_path = getenv_or("SOLFUZZ_VECTOR_SINK_PATH", "");
         if (sink_path.empty()) {
@@ -1408,34 +1408,6 @@ void MetricsLogger::log_mutation_health(
         jb.add("elf_fixup_ok_cnt", elf_fixup_ok_cnt);
         jb.add("exec_fail_cnt", exec_fail_cnt);
         jb.add("verify_cnt", verify_cnt);
-        emit_jsonl_("execution_events", jb);
-    }
-}
-
-void MetricsLogger::log_memory_stats(
-    int64_t children_rss_mb,
-    int64_t host_available_mb,
-    int64_t cgroup_current_mb,
-    int64_t cgroup_max_mb,
-    uint64_t rss_killed_cnt,
-    uint64_t rlimit_rss_mb)
-{
-    static const bool s_exec_events_enabled = [] {
-        const char* v = std::getenv("SOLFUZZ_EXECUTION_EVENTS_ENABLE");
-        return v && std::string(v) == "1";
-    }();
-    if (!s_exec_events_enabled) return;
-
-    if (vector_enabled_.load()) {
-        JsonBuilder jb;
-        add_common_fields_(jb);
-        jb.add_timestamp("event_time", now_epoch_ms());
-        jb.add("children_rss_mb", static_cast<int>(children_rss_mb));
-        jb.add("host_available_mb", static_cast<int>(host_available_mb));
-        jb.add("cgroup_current_mb", static_cast<int>(cgroup_current_mb));
-        jb.add("cgroup_max_mb", static_cast<int>(cgroup_max_mb));
-        jb.add("rss_killed_cnt", rss_killed_cnt);
-        jb.add("rlimit_rss_mb", rlimit_rss_mb);
         emit_jsonl_("execution_events", jb);
     }
 }

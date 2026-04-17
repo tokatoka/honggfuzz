@@ -40,4 +40,12 @@ extern void     instrumentAddConstStr(const char* s);
 extern void     instrumentAddConstStrN(const char* s, size_t n);
 extern bool     instrumentConstAvail();
 
+/* Mutation health counter accessors for HF_ITER-based fuzzers (Rust cargo-hfuzz).
+   Write to globalCovFeedback shared memory; parent reads for metrics bridge. */
+extern void     instrumentReportProtoParseCall(void);
+extern void     instrumentReportProtoParseSuccess(void);
+extern void     instrumentReportExecFail(void);
+extern void     instrumentReportVerify(void);
+extern void     instrumentReportElfFixupOk(void);
+
 #endif /* ifdef _HF_LIBHFUZZ_INSTRUMENT_H_ */

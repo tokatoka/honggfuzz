@@ -798,7 +798,7 @@ static bool instrumentCovDebugEnabled(void) {
 static inline void moduleSpinlockAcquire(void) {
     const uint64_t MAX_SPINS = 100000000ULL;  /* ~10s at 10M spins/s */
     uint64_t spins = 0;
-    
+
     for (;;) {
         while (atomic_load_explicit(&globalCovFeedback->moduleRegistrationLock, memory_order_relaxed) != 0) {
             #if defined(__x86_64__) || defined(__i386__)
@@ -808,7 +808,7 @@ static inline void moduleSpinlockAcquire(void) {
             #else
             __asm__ volatile("" ::: "memory");
             #endif
-            
+
             if (++spins > MAX_SPINS) {
                 LOG_F("Spinlock timeout after ~10s - lock holder may have died or deadlocked");
             }
@@ -861,7 +861,7 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
     }
 
     size_t guardCount = ((uintptr_t)stop - (uintptr_t)start) / sizeof(*start);
-    
+
     /* Get library path for tracking */
     Dl_info info;
     const char* libName = "unknown";
@@ -885,14 +885,14 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
         for (uint32_t* x = start; x < stop; x++) {
             *x = guardNo++;
         }
-        LOG_D("Reusing guards for module %s: base=%u count=%u", libName, 
+        LOG_D("Reusing guards for module %s: base=%u count=%u", libName,
             existing->baseGuard, existing->guardCount);
         return;
     }
 
     /* Not found - need to register under lock */
     moduleSpinlockAcquire();
-    
+
     /* Double-check: another process might have registered while we waited */
     existing = findTrackedModule(pathHash, (uint32_t)guardCount);
     if (existing) {
@@ -901,11 +901,11 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
             *x = guardNo++;
         }
         moduleSpinlockRelease();
-        LOG_D("Reusing guards for module %s (found under lock): base=%u count=%u", libName, 
+        LOG_D("Reusing guards for module %s (found under lock): base=%u count=%u", libName,
             existing->baseGuard, existing->guardCount);
         return;
     }
-    
+
     /* Check guard limit before allocating to release lock before potential LOG_F */
     size_t currentGuards = instrumentReserveGuard(0);
     if (currentGuards + guardCount >= _HF_PC_GUARD_MAX) {
@@ -913,16 +913,16 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
         LOG_F("PC-guard limit would be exceeded: current=%zu, requested=%zu, max=%llu",
               currentGuards, guardCount, _HF_PC_GUARD_MAX);
     }
-    
+
     /* Allocate guards */
     uint32_t baseGuard = instrumentReserveGuard(guardCount);
-    
+
     /* Assign guard numbers to the module's guard array */
     uint32_t guardNo = baseGuard;
     for (uint32_t* x = start; x < stop; x++) {
         *x = guardNo++;
     }
-    
+
     /* Register in tracking table */
     uint32_t slot = atomic_load_explicit(&globalCovFeedback->trackedModuleCount, memory_order_relaxed);
     if (slot < _HF_MAX_TRACKED_MODULES) {
@@ -933,21 +933,21 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
         /* RELEASE store ensures entry writes are visible before count increment.
          * This synchronizes with ACQUIRE load in findTrackedModule(). */
         atomic_store_explicit(&globalCovFeedback->trackedModuleCount, slot + 1, memory_order_release);
-        
-        LOG_I("PC-Guard module registration: %p-%p (count:%zu) at guard %u in slot %u from %s", 
+
+        LOG_I("PC-Guard module registration: %p-%p (count:%zu) at guard %u in slot %u from %s",
             start, stop, guardCount, baseGuard, slot, libName);
-        
+
         /* Notify metrics of new module (optional - weak symbol, no-op if not overridden) */
         hfuzz_metrics_register_module(libName, baseGuard, (uint32_t)guardCount);
     } else {
         moduleSpinlockRelease();
         LOG_F("No free tracking slots for module %s (all %u slots in use). "
-              "Increase _HF_MAX_TRACKED_MODULES in honggfuzz.h", 
+              "Increase _HF_MAX_TRACKED_MODULES in honggfuzz.h",
               libName, _HF_MAX_TRACKED_MODULES);
     }
-    
+
     moduleSpinlockRelease();
-    
+
     if (instrumentCovDebugEnabled()) {
         size_t globalTotal = instrumentReserveGuard(0);
         LOG_I("[COV] PC-Guard: +%zu guards (global total: %zu) from %s",
@@ -961,10 +961,11 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard_init(uint32_t* start
  * This gives: 100% for 0=>1, 50% for 1=>2, 33% for 2=>4, 20% for 4=>8, etc.
  * Result: logarithmic expected corpus additions per edge, never fully ignoring transitions.
  *
- * When disabled (set to 0), falls back to the original behavior: every edge bucket
- * transition unconditionally increments pidNewCmp (unbounded, can dominate corpus).
+ * When disabled (set to 0), every edge bucket transition unconditionally increments
+ * pidEdgeBucketInc (which fuzz.c reads as softEdgeBucketInc).  This produces more
+ * corpus additions from frequency changes but avoids suppressing real coverage signal.
  */
-#define _HF_EDGE_BUCKET_LOG_COUNTING 1
+#define _HF_EDGE_BUCKET_LOG_COUNTING 0
 
 /* Map number of visits to an edge into buckets */
 static uint8_t const instrumentCntMap[256] = {
@@ -1062,7 +1063,7 @@ HF_REQUIRE_SSE42_POPCNT void __sanitizer_cov_trace_pc_guard(uint32_t* guard_ptr)
                 ATOMIC_PRE_INC(globalCovFeedback->pidEdgeBucketInc[my_thread_no].val);
             }
 #else
-            ATOMIC_PRE_INC(globalCovFeedback->pidNewCmp[my_thread_no].val);
+            ATOMIC_PRE_INC(globalCovFeedback->pidEdgeBucketInc[my_thread_no].val);
 #endif
         }
     }
@@ -1112,7 +1113,7 @@ void instrument8BitCountersCount(void) {
                         ATOMIC_PRE_INC(globalCovFeedback->pidEdgeBucketInc[my_thread_no].val);
                     }
 #else
-                    ATOMIC_PRE_INC(globalCovFeedback->pidNewCmp[my_thread_no].val);
+                    ATOMIC_PRE_INC(globalCovFeedback->pidEdgeBucketInc[my_thread_no].val);
 #endif
                 }
             }
@@ -1138,9 +1139,9 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
     if ((uintptr_t)start == (uintptr_t)end) {
         return;
     }
-    
+
     size_t counterCount = (uintptr_t)end - (uintptr_t)start;
-    
+
     /* Get library path for tracking */
     Dl_info info;
     const char* libName = "unknown";
@@ -1157,7 +1158,7 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
     }
     /* Use different hash space for 8-bit counters vs PC guards to avoid collisions */
     uint64_t pathHash = util_hash(libName, strlen(libName)) ^ 0x8B178B178B178B17ULL;
-    
+
     /* Quick optimistic check without lock (common case: already registered) */
     trackedModule_t* existing = findTrackedModule(pathHash, (uint32_t)counterCount);
     if (existing) {
@@ -1174,10 +1175,10 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
         }
         return;
     }
-    
+
     /* Not found - need to register under lock */
     moduleSpinlockAcquire();
-    
+
     /* Double-check: another process might have registered while we waited */
     existing = findTrackedModule(pathHash, (uint32_t)counterCount);
     if (existing) {
@@ -1194,7 +1195,7 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
             existing->baseGuard, existing->guardCount);
         return;
     }
-    
+
     /* Check guard limit before allocating to release lock before potential LOG_F */
     size_t currentGuards = instrumentReserveGuard(0);
     if (currentGuards + counterCount >= _HF_PC_GUARD_MAX) {
@@ -1202,7 +1203,7 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
         LOG_F("PC-guard limit would be exceeded (8-bit): current=%zu, requested=%zu, max=%llu",
               currentGuards, counterCount, _HF_PC_GUARD_MAX);
     }
-    
+
     /* Allocate guards and register in local array */
     size_t baseGuard = 0;
     bool foundSlot = false;
@@ -1216,14 +1217,14 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
             break;
         }
     }
-    
+
     if (!foundSlot) {
         moduleSpinlockRelease();
         LOG_F("No free local slots for 8-bit counters (all %zu slots in use). "
               "Increase hf8bitcounters array size in instrument.c",
               ARRAYSIZE(hf8bitcounters));
     }
-    
+
     /* Register in shared tracking table */
     uint32_t slot = atomic_load_explicit(&globalCovFeedback->trackedModuleCount, memory_order_relaxed);
     if (slot < _HF_MAX_TRACKED_MODULES) {
@@ -1231,7 +1232,7 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
         globalCovFeedback->trackedModules[slot].guardCount = (uint32_t)counterCount;
         globalCovFeedback->trackedModules[slot].baseGuard = (uint32_t)baseGuard;
         atomic_store_explicit(&globalCovFeedback->trackedModuleCount, slot + 1, memory_order_release);
-        
+
         LOG_I("8-bit module registration: %p-%p (count:%zu) at guard %zu in slot %u",
             start, end, counterCount, baseGuard, slot);
     } else {
@@ -1240,9 +1241,9 @@ void __sanitizer_cov_8bit_counters_init(char* start, char* end) {
               "Increase _HF_MAX_TRACKED_MODULES in honggfuzz.h",
               libName, _HF_MAX_TRACKED_MODULES);
     }
-    
+
     moduleSpinlockRelease();
-    
+
     if (instrumentCovDebugEnabled()) {
         size_t globalTotal = instrumentReserveGuard(0);
         LOG_I("[COV] 8-bit counters: +%zu guards (global total: %zu) from %s",
@@ -1259,13 +1260,13 @@ void __sanitizer_cov_pcs_init(const uintptr_t* pcs_beg, const uintptr_t* pcs_end
     if (pcs_beg >= pcs_end) {
         return;
     }
-    
+
     /* Calculate number of PC entries (each entry is 2 uintptrs: PC + flags) */
     size_t pc_count = (pcs_end - pcs_beg) / 2;
     if (pc_count == 0) {
         return;
     }
-    
+
     /* Get module name for this PC table */
     Dl_info info;
     const char* libName = "unknown";
@@ -1280,12 +1281,12 @@ void __sanitizer_cov_pcs_init(const uintptr_t* pcs_beg, const uintptr_t* pcs_end
             libName = info.dli_fname;  /* Fallback to original if realpath fails */
         }
     }
-    
+
     /* Find the matching module registration to get the guard_start.
      * The PC count should match the guard count for the module. */
     uint32_t guard_start = 0;
     uint64_t pathHash = util_hash(libName, strlen(libName));
-    
+
     /* Search for a module with matching path hash and guard count */
     uint32_t moduleCount = atomic_load_explicit(
         &globalCovFeedback->trackedModuleCount, memory_order_acquire);
@@ -1296,11 +1297,11 @@ void __sanitizer_cov_pcs_init(const uintptr_t* pcs_beg, const uintptr_t* pcs_end
             break;
         }
     }
-    
+
     LOG_D("PC table init: %s with %zu PCs at guard_start=%u", libName, pc_count, guard_start);
-    
+
     /* Notify metrics of the PC table (optional - weak symbol, no-op if not overridden) */
-    hfuzz_metrics_register_pc_table(libName, (const hfuzz_pc_entry_t*)pcs_beg, 
+    hfuzz_metrics_register_pc_table(libName, (const hfuzz_pc_entry_t*)pcs_beg,
                                      pc_count, guard_start);
 }
 
@@ -1428,4 +1429,31 @@ void instrumentAddConstStrN(const char* s, size_t n) {
 
 bool instrumentConstAvail(void) {
     return (ATOMIC_GET(globalCmpFeedback) != NULL);
+}
+
+/*
+ * Mutation health counter accessors for fuzzers that bypass the usual
+ * persistent-loop input execution path.
+ *
+ * These helpers update per-thread counters stored in the shared
+ * globalCovFeedback structure so the supervising process can aggregate them.
+ */
+void instrumentReportProtoParseCall(void) {
+    ATOMIC_POST_INC(globalCovFeedback->pidProtoParseCallsCnt[my_thread_no].val);
+}
+
+void instrumentReportProtoParseSuccess(void) {
+    ATOMIC_POST_INC(globalCovFeedback->pidProtoParseSuccessesCnt[my_thread_no].val);
+}
+
+void instrumentReportExecFail(void) {
+    ATOMIC_POST_INC(globalCovFeedback->pidExecFailCnt[my_thread_no].val);
+}
+
+void instrumentReportVerify(void) {
+    ATOMIC_POST_INC(globalCovFeedback->pidVerifyCnt[my_thread_no].val);
+}
+
+void instrumentReportElfFixupOk(void) {
+    ATOMIC_POST_INC(globalCovFeedback->pidElfFixupOkCnt[my_thread_no].val);
 }

@@ -321,7 +321,7 @@ void display_display(honggfuzz_t* hfuzz) {
 
     display_start();
 
-    display_put(ESC_NAV(13, 1) ESC_CLEAR_ABOVE ESC_NAV(1, 1));
+    display_put(ESC_NAV(14, 1) ESC_CLEAR_ABOVE ESC_NAV(1, 1));
     display_put("------------------------[" ESC_BOLD "%31s " ESC_RESET "]----------------------\n",
         timeStr);
     display_put("  Iterations : " ESC_BOLD "%" _HF_NONMON_SEP "zu" ESC_RESET, curr_exec_cnt);
@@ -386,6 +386,18 @@ void display_display(honggfuzz_t* hfuzz) {
         ATOMIC_GET(hfuzz->cnts.timeoutedCnt), (unsigned long)hfuzz->timing.tmOut);
     display_put("   RSS Kills : " ESC_BOLD "%" _HF_NONMON_SEP "zu" ESC_RESET "\n",
         ATOMIC_GET(hfuzz->cnts.rssKilledCnt));
+    size_t truncatedTooLarge = ATOMIC_GET(hfuzz->cnts.inputsTruncatedTooLarge);
+    if (hfuzz->feedback.covFeedbackMap) {
+        for (size_t i = 0; i < hfuzz->threads.threadsMax; i++) {
+            truncatedTooLarge += ATOMIC_GET(hfuzz->feedback.covFeedbackMap->pidInputsTruncatedCnt[i].val);
+        }
+    }
+    if (truncatedTooLarge > 0) {
+        display_put("   Truncated : " ESC_BOLD "%s%" _HF_NONMON_SEP "zu" ESC_RESET
+                    " [max: %" _HF_NONMON_SEP "zu bytes]\n",
+            truncatedTooLarge > 100 ? ESC_RED : "", truncatedTooLarge,
+            hfuzz->mutate.maxInputSz);
+    }
 
     /* Differential fuzzing metrics */
     size_t phase2Fallbacks = ATOMIC_GET(hfuzz->cnts.diffFuzzPhase2Fallbacks);
@@ -397,7 +409,7 @@ void display_display(honggfuzz_t* hfuzz) {
                     ", fertile: " ESC_GREEN ESC_BOLD "%" _HF_NONMON_SEP "zu" ESC_RESET "\n",
             phase2Fallbacks, saturated > 10 ? ESC_RED : "", saturated, fertile);
     }
-    
+
     /* Feedback data sources. Common headers. */
     display_put(" Corpus Size : " ESC_BOLD "%" _HF_NONMON_SEP "zu" ESC_RESET ", max: " ESC_BOLD
                 "%" _HF_NONMON_SEP "zu" ESC_RESET " bytes, init: " ESC_BOLD "%" _HF_NONMON_SEP
@@ -427,15 +439,17 @@ void display_display(honggfuzz_t* hfuzz) {
             ATOMIC_GET(hfuzz->feedback.hwCnts.bbCnt));
     }
     if (hfuzz->feedback.dynFileMethod & _HF_DYNFILE_SOFT) {
-        uint64_t softCntPc   = ATOMIC_GET(hfuzz->feedback.hwCnts.softCntPc);
-        uint64_t softCntEdge = ATOMIC_GET(hfuzz->feedback.hwCnts.softCntEdge);
-        uint64_t softCntCmp  = ATOMIC_GET(hfuzz->feedback.hwCnts.softCntCmp);
+        uint64_t softCntPc         = ATOMIC_GET(hfuzz->feedback.hwCnts.softCntPc);
+        uint64_t softCntEdge       = ATOMIC_GET(hfuzz->feedback.hwCnts.softCntEdge);
+        uint64_t softCntCmp        = ATOMIC_GET(hfuzz->feedback.hwCnts.softCntCmp);
+        uint64_t softCntEdgeBucket = ATOMIC_GET(hfuzz->feedback.hwCnts.softCntEdgeBucket);
         uint64_t guardNb     = atomic_load_explicit(&hfuzz->feedback.covFeedbackMap->guardNb, memory_order_relaxed);
         display_put(" edge: " ESC_BOLD "%" _HF_NONMON_SEP PRIu64 ESC_RESET "/"
                     "%" _HF_NONMON_SEP PRIu64 " [%" PRId64 "%%]",
             softCntEdge, guardNb, guardNb ? ((softCntEdge * 100) / guardNb) : 0);
         display_put(" pc: " ESC_BOLD "%" _HF_NONMON_SEP PRIu64 ESC_RESET, softCntPc);
         display_put(" cmp: " ESC_BOLD "%" _HF_NONMON_SEP PRIu64 ESC_RESET, softCntCmp);
+        display_put(" eb: " ESC_BOLD "%" _HF_NONMON_SEP PRIu64 ESC_RESET, softCntEdgeBucket);
         /* Find max stack depth across all threads */
         size_t maxDepth = 0;
         for (size_t i = 0; i < hfuzz->threads.threadsMax; i++) {
@@ -459,7 +473,7 @@ void display_display(honggfuzz_t* hfuzz) {
     display_put("\n---------------------------------- [ " ESC_BOLD "LOGS" ESC_RESET
                 " ] ------------------/ " ESC_BOLD "%s %s " ESC_RESET "/-",
         PROG_NAME, PROG_VERSION);
-    display_put(ESC_SCROLL_REGION(13, ) ESC_NAV_HORIZ(1) ESC_NAV_DOWN(500));
+    display_put(ESC_SCROLL_REGION(14, ) ESC_NAV_HORIZ(1) ESC_NAV_DOWN(500));
 
     MX_SCOPED_LOCK(logMutexGet());
     display_stop();

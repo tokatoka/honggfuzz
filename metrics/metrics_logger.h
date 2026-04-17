@@ -118,15 +118,6 @@ public:
         // INPUT-HEALTH
         uint64_t inputs_truncated_too_large = 0);
 
-    // Log memory health metrics for timeseries monitoring
-    void log_memory_stats(
-        int64_t children_rss_mb,
-        int64_t host_available_mb,
-        int64_t cgroup_current_mb,
-        int64_t cgroup_max_mb,
-        uint64_t rss_killed_cnt,
-        uint64_t rlimit_rss_mb);
-
     // Log mutation health metrics (proto/LPM/ELF counters)
     void log_mutation_health(
         uint64_t proto_parse_calls,

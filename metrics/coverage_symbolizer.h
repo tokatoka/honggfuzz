@@ -91,10 +91,10 @@ private:
   std::unordered_set<std::string> allowed_module_fullpaths_;
   std::vector<std::string> allowed_source_prefixes_;
 
-  // Symbol caches (absolute PCs — used by batch_resolve_symbols / resolve_symbol)
+  // Symbol caches (absolute PCs -- used by batch_resolve_symbols / resolve_symbol)
   std::unordered_map<uintptr_t, std::string> symbol_cache_;
   std::unordered_map<uintptr_t, PcLocation> pc_loc_cache_;
-  // Per-module caches (relative PCs — used by batch_resolve_for_module)
+  // Per-module caches (relative PCs -- used by batch_resolve_for_module)
   std::unordered_map<std::string, std::unordered_map<uintptr_t, std::string>> module_symbol_cache_;
   std::unordered_map<std::string, std::unordered_map<uintptr_t, PcLocation>> module_pc_loc_cache_;
   std::unordered_map<std::string, bool> module_is_dyn_cache_;

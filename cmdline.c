@@ -292,6 +292,13 @@ static bool cmdlineVerify(honggfuzz_t* hfuzz) {
         return false;
     }
 
+    if (hfuzz->io.minFileSz > 0 && hfuzz->io.maxFileSz > 0 &&
+        hfuzz->io.minFileSz > hfuzz->io.maxFileSz) {
+        LOG_E("Minimum file size '%zu' is greater than maximum file size '%zu'",
+            hfuzz->io.minFileSz, hfuzz->io.maxFileSz);
+        return false;
+    }
+
     return true;
 }
 
@@ -317,6 +324,7 @@ bool cmdlineParse(int argc, char* argv[], honggfuzz_t* hfuzz) {
                 .fileCnt                = 0,
                 .testedFileCnt          = 0,
                 .maxFileSz              = 0,
+                .minFileSz              = 0,
                 .newUnitsAdded          = 0,
                 .fileExtn               = "fuzz",
                 .workDir                = {},
@@ -345,6 +353,7 @@ bool cmdlineParse(int argc, char* argv[], honggfuzz_t* hfuzz) {
                 .postExternalCommand   = NULL,
                 .feedbackMutateCommand = NULL,
                 .persistent            = false,
+                .useCustomMutator      = true,
                 .netDriver             = false,
                 .asLimit               = 0U,
                 .rssLimit              = 0U,
@@ -519,6 +528,7 @@ bool cmdlineParse(int argc, char* argv[], honggfuzz_t* hfuzz) {
         { { "rlimit_stack", required_argument, NULL, 0x104 }, "Per process RLIMIT_STACK in MiB (default: 0 [default limit])" },
         { { "report", required_argument, NULL, 'R' }, "Write report to this file (default: '<workdir>/" _HF_REPORT_FILE "')" },
         { { "max_file_size", required_argument, NULL, 'F' }, "Maximal size of files processed by the fuzzer in bytes (default: 1048576 = 1MB)" },
+        { { "min_file_size", required_argument, NULL, 0x117 }, "Minimal size of inputs fed to the target in bytes (default: 0 = no minimum). Mutations that shrink below this are padded with zeros." },
         { { "clear_env", no_argument, NULL, 0x108 }, "Clear all environment variables before executing the binary" },
         { { "env", required_argument, NULL, 'E' }, "Pass this environment variable, can be used multiple times" },
         { { "save_all", no_argument, NULL, 'u' }, "Save all test-cases (not only the unique ones) by appending the current time-stamp to the filenames" },
@@ -537,6 +547,8 @@ bool cmdlineParse(int argc, char* argv[], honggfuzz_t* hfuzz) {
         { { "pin_thread_cpu", required_argument, NULL, 0x114 }, "Pin a single execution thread to this many consecutive CPUs (default: 0 = no CPU pinning)" },
         { { "dynamic_input", required_argument, NULL, 0x115 }, "Path to a directory containing the dynamic file corpus" },
         { { "statsfile", required_argument, NULL, 0x116 }, "Stats file" },
+        { { "custom-mutator", no_argument, NULL, 0x130 }, "Enable in-process LLVMFuzzerCustomMutator for structure-aware mutation (default: enabled)" },
+        { { "no-custom-mutator", no_argument, NULL, 0x131 }, "Disable in-process LLVMFuzzerCustomMutator; use honggfuzz byte-level mutation instead" },
 
 #if defined(_HF_ARCH_LINUX)
         { { "linux_symbols_bl", required_argument, NULL, 0x504 }, "Symbols blocklist filter file (one entry per line)" },
@@ -677,8 +689,17 @@ bool cmdlineParse(int argc, char* argv[], honggfuzz_t* hfuzz) {
         case 0x120:
             hfuzz->cfg.replay = true;
             break;
+        case 0x130:
+            hfuzz->exe.useCustomMutator = true;
+            break;
+        case 0x131:
+            hfuzz->exe.useCustomMutator = false;
+            break;
         case 'F':
             hfuzz->io.maxFileSz = strtoul(optarg, NULL, 0);
+            break;
+        case 0x117:
+            hfuzz->io.minFileSz = strtoul(optarg, NULL, 0);
             break;
         case 't':
             hfuzz->timing.tmOut = atol(optarg);

@@ -1224,16 +1224,6 @@ void hfuzz_metrics_bridge_log_coverage(uint64_t new_pcs,
 }
 
 /*
- * Set the coverage denominator (total possible coverage points).
- */
-void hfuzz_metrics_bridge_set_coverage_denominator(uint64_t total_guards) {
-    s_coverage_denominator.store(total_guards, std::memory_order_relaxed);
-
-    std::cerr << "[hfuzz_metrics_bridge] Coverage denominator set: "
-              << total_guards << " total guards" << std::endl;
-}
-
-/*
  * Log detailed coverage map for source-level analysis.
  * Counts covered guards from the honggfuzz guard map.
  */
@@ -1924,16 +1914,24 @@ void hfuzz_metrics_bridge_log_stats(
     uint64_t explore_selects,
     uint64_t secs_since_crash,
     uint64_t stagnation_secs,
-    uint64_t corpus_growth
+    uint64_t corpus_growth,
+    const char* fuzzer_state,
+    uint64_t dry_run_tested,
+    uint64_t dry_run_total,
+    uint64_t inputs_truncated_too_large
 ) {
     if (!s_session_initialized.load()) {
         return;
     }
 
     std::cerr << "[hfuzz_metrics_bridge] Stats update - "
-              << "sched: " << sched_total
+              << "state: " << (fuzzer_state ? fuzzer_state : "unknown")
+              << ", total_execs: " << total_executions
+              << ", exec_avg_us: " << exec_avg_us
+              << ", sched: " << sched_total
               << ", repeat: " << repeat_pct << "%"
               << ", energy: " << avg_energy
+              << ", mut_hit_rate: " << mut_hit_rate_pct << "%"
               << ", plateau: " << plateau_secs << "s"
               << ", corpus: " << corpus_count
               << ", crashes: " << unique_crashes << std::endl;
@@ -1946,10 +1944,65 @@ void hfuzz_metrics_bridge_log_stats(
             sched_total, repeat_pct, high_pct, low_pct, phase2_pct, avg_energy, avg_iters, max_iters, energy_min, energy_max,
             novelty_decay, fresh_boost, stale_penalty, diminishing, depth_penalty, corpus_count, global_avg_energy,
             exec_avg_us, exec_max_us, slow_execs, mut_hit_rate_pct, plateau_secs, queue_wraps, max_depth,
-            unique_crashes, total_crashes, timeouts, fertile_boosts, saturated, explore_selects, secs_since_crash, stagnation_secs, corpus_growth
+            unique_crashes, total_crashes, timeouts, fertile_boosts, saturated, explore_selects, secs_since_crash, stagnation_secs, corpus_growth,
+            fuzzer_state ? fuzzer_state : "unknown", dry_run_tested, dry_run_total,
+            inputs_truncated_too_large
         );
     } catch (const std::exception& e) {
         std::cerr << "[hfuzz_metrics_bridge] Error logging stats: "
+                  << e.what() << std::endl;
+    }
+}
+
+void hfuzz_metrics_bridge_log_mutation_health(
+    uint64_t proto_parse_calls,
+    uint64_t proto_parse_successes,
+    uint64_t custom_mutator_calls,
+    uint64_t custom_mutator_successes,
+    uint64_t proto_round_cnt,
+    uint64_t proto_scan_ok_cnt,
+    uint64_t total_round_cnt,
+    uint64_t lpm_mutate_cnt,
+    uint64_t lpm_crossover_cnt,
+    uint64_t lpm_parse_fail_cnt,
+    uint64_t postprocessor_cnt,
+    uint64_t elf_fixup_ok_cnt,
+    uint64_t exec_fail_cnt,
+    uint64_t verify_cnt
+) {
+    if (!s_session_initialized.load()) {
+        return;
+    }
+
+    float proto_parse_pct = proto_parse_calls > 0
+        ? (100.0f * proto_parse_successes / proto_parse_calls) : 0.0f;
+    float custom_mut_pct = custom_mutator_calls > 0
+        ? (100.0f * custom_mutator_successes / custom_mutator_calls) : 0.0f;
+
+    std::cerr << "[hfuzz_metrics_bridge] Mutation health - "
+              << "proto_parse: " << proto_parse_successes << "/" << proto_parse_calls
+              << " (" << std::fixed << std::setprecision(1) << proto_parse_pct << "%)"
+              << ", custom_mut: " << custom_mutator_successes << "/" << custom_mutator_calls
+              << " (" << custom_mut_pct << "%)"
+              << ", lpm_mutate: " << lpm_mutate_cnt
+              << ", lpm_crossover: " << lpm_crossover_cnt
+              << ", lpm_parse_fail: " << lpm_parse_fail_cnt
+              << ", exec_fail: " << exec_fail_cnt
+              << std::endl;
+
+    try {
+        auto& logger = sol_compat::MetricsLogger::instance();
+        logger.log_mutation_health(
+            proto_parse_calls, proto_parse_successes,
+            custom_mutator_calls, custom_mutator_successes,
+            proto_parse_pct,
+            proto_round_cnt, proto_scan_ok_cnt, total_round_cnt,
+            lpm_mutate_cnt, lpm_crossover_cnt, lpm_parse_fail_cnt,
+            postprocessor_cnt, elf_fixup_ok_cnt,
+            exec_fail_cnt, verify_cnt
+        );
+    } catch (const std::exception& e) {
+        std::cerr << "[hfuzz_metrics_bridge] Error logging mutation health: "
                   << e.what() << std::endl;
     }
 }

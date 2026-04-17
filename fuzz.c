@@ -112,6 +112,7 @@ static void fuzz_setDynamicMainState(run_t* run) {
     if (run->global->cfg.minimize) {
         LOG_I("Entering phase 3/3: Corpus Minimization");
         ATOMIC_SET(run->global->feedback.state, _HF_STATE_DYNAMIC_MINIMIZE);
+        fprintf(stderr, "[hfuzz_stats] state=minimize\n");
         return;
     }
 
@@ -153,6 +154,18 @@ static void fuzz_setDynamicMainState(run_t* run) {
 
     LOG_I("Entering phase 3/3: Dynamic Main (Feedback Driven Mode)");
     ATOMIC_SET(run->global->feedback.state, _HF_STATE_DYNAMIC_MAIN);
+
+    uint64_t execs = ATOMIC_GET(run->global->cnts.mutationsCnt);
+    uint64_t pcs   = ATOMIC_GET(run->global->feedback.hwCnts.softCntPc);
+    uint64_t edges = ATOMIC_GET(run->global->feedback.hwCnts.softCntEdge);
+    uint64_t corpus = ATOMIC_GET(run->global->io.dynfileqCnt);
+    uint64_t uniqueCrashes = ATOMIC_GET(run->global->cnts.uniqueCrashesCnt);
+    uint64_t crashes = ATOMIC_GET(run->global->cnts.crashesCnt);
+    fprintf(stderr, "[hfuzz_stats] state=dynamic execs=%zu pcs=%zu edges=%zu "
+            "corpus=%zu crashes=%zu/%zu threads=%zu\n",
+            (size_t)execs, (size_t)pcs, (size_t)edges,
+            (size_t)corpus, (size_t)uniqueCrashes, (size_t)crashes,
+            (size_t)run->global->threads.threadsMax);
 }
 
 static void fuzz_minimizeRemoveFiles(run_t* run) {
@@ -197,6 +210,7 @@ static void fuzz_perfFeedback(run_t* run) {
     uint64_t softCurEdge       = 0;
     uint64_t softNewCmp        = 0;
     uint64_t softCurCmp        = 0;
+    uint64_t softEdgeBucketInc = 0;
     bool     softNewStackDepth = false;
 
     if (run->global->feedback.dynFileMethod & _HF_DYNFILE_SOFT) {
@@ -215,6 +229,10 @@ static void fuzz_perfFeedback(run_t* run) {
         ATOMIC_CLEAR(run->global->feedback.covFeedbackMap->pidNewCmp[run->fuzzNo].val);
         softCurCmp = ATOMIC_GET(run->global->feedback.covFeedbackMap->pidTotalCmp[run->fuzzNo].val);
         ATOMIC_CLEAR(run->global->feedback.covFeedbackMap->pidTotalCmp[run->fuzzNo].val);
+
+        softEdgeBucketInc = ATOMIC_GET(run->global->feedback.covFeedbackMap->pidEdgeBucketInc[run->fuzzNo].val);
+        ATOMIC_CLEAR(run->global->feedback.covFeedbackMap->pidEdgeBucketInc[run->fuzzNo].val);
+
         ATOMIC_CLEAR(run->global->feedback.covFeedbackMap->pidLastStackDepth[run->fuzzNo].val);
 
         softNewStackDepth = ATOMIC_XCHG(
@@ -226,10 +244,10 @@ static void fuzz_perfFeedback(run_t* run) {
     int64_t diff0 = (int64_t)run->global->feedback.hwCnts.cpuInstrCnt - run->hwCnts.cpuInstrCnt;
     int64_t diff1 = (int64_t)run->global->feedback.hwCnts.cpuBranchCnt - run->hwCnts.cpuBranchCnt;
 
-    /* Any increase in coverage (edge, pc, cmp, hw, stack) counters forces adding input to the
-     * corpus */
+    /* Any increase in coverage (edge, pc, cmp, hw, stack, edge-bucket) counters forces adding
+     * input to the corpus */
     if (run->hwCnts.newBBCnt > 0 || softNewPC > 0 || softNewEdge > 0 || softNewCmp > 0 ||
-        softNewStackDepth || diff0 < 0 || diff1 < 0) {
+        softEdgeBucketInc > 0 || softNewStackDepth || diff0 < 0 || diff1 < 0) {
         if (diff0 < 0) {
             run->global->feedback.hwCnts.cpuInstrCnt = run->hwCnts.cpuInstrCnt;
         }
@@ -240,15 +258,18 @@ static void fuzz_perfFeedback(run_t* run) {
         run->global->feedback.hwCnts.softCntPc += softNewPC;
         run->global->feedback.hwCnts.softCntEdge += softNewEdge;
         run->global->feedback.hwCnts.softCntCmp += softNewCmp;
+        run->global->feedback.hwCnts.softCntEdgeBucket += softEdgeBucketInc;
 
-        LOG_I("Sz:%zu Tm:%" _HF_NONMON_SEP PRIu64 "us (i/b/h/e/p/c) New:%" PRIu64 "/%" PRIu64
-              "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 ", Cur:%" PRIu64 "/%" PRIu64
-              "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64,
+        LOG_I("Sz:%zu Tm:%" _HF_NONMON_SEP PRIu64 "us (i/b/h/e/p/c/eb) New:%" PRIu64 "/%" PRIu64
+              "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
+              ", Cur:%" PRIu64 "/%" PRIu64
+              "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64,
             run->dynfile->size, util_timeNowUSecs() - run->timeStartedUSecs,
             run->hwCnts.cpuInstrCnt, run->hwCnts.cpuBranchCnt, run->hwCnts.newBBCnt, softNewEdge,
-            softNewPC, softNewCmp, run->hwCnts.cpuInstrCnt, run->hwCnts.cpuBranchCnt,
+            softNewPC, softNewCmp, softEdgeBucketInc, run->hwCnts.cpuInstrCnt, run->hwCnts.cpuBranchCnt,
             run->global->feedback.hwCnts.bbCnt, run->global->feedback.hwCnts.softCntEdge,
-            run->global->feedback.hwCnts.softCntPc, run->global->feedback.hwCnts.softCntCmp);
+            run->global->feedback.hwCnts.softCntPc, run->global->feedback.hwCnts.softCntCmp,
+            run->global->feedback.hwCnts.softCntEdgeBucket);
 
         if (run->global->io.statsFileName) {
             const time_t curr_sec      = time(NULL);
@@ -317,6 +338,7 @@ static void fuzz_perfFeedback(run_t* run) {
                 ATOMIC_POST_INC(run->global->mutate.stats[tier].successes);
             }
         }
+        ATOMIC_POST_INC(run->global->cnts.mutationsWithNewCov);
 
         /* Push useful imported input to dynamic queue again for the further mutations */
         if (run->dynfile->imported) {
@@ -339,20 +361,23 @@ static void fuzz_perfFeedback(run_t* run) {
             run->global->feedback.hwCnts.softCntEdge,
             run->global->feedback.hwCnts.softCntCmp,
             run->global->io.dynfileqCnt);
-        
+
         /* Log detailed coverage map for source-level analysis */
         uint64_t total_guards = atomic_load_explicit(&run->global->feedback.covFeedbackMap->guardNb, memory_order_relaxed);
         hfuzz_metrics_log_detailed_coverage(
             run->global->feedback.covFeedbackMap->pcGuardMap,
             total_guards);
-    } else if (run->dynfile->imported) {
-        /* Remove useless imported inputs from corpus */
-        LOG_D("Removing useless imported file: %s", run->dynfile->path);
-        char fname[PATH_MAX];
-        snprintf(fname, PATH_MAX, "%s/%s",
-            run->global->io.outputDir ? run->global->io.outputDir : run->global->io.inputDir,
-            run->dynfile->path);
-        unlink(fname);
+    } else {
+        ATOMIC_POST_INC(run->global->cnts.mutationsWithoutNewCov);
+        if (run->dynfile->imported) {
+            /* Remove useless imported inputs from corpus */
+            LOG_D("Removing useless imported file: %s", run->dynfile->path);
+            char fname[PATH_MAX];
+            snprintf(fname, PATH_MAX, "%s/%s",
+                run->global->io.outputDir ? run->global->io.outputDir : run->global->io.inputDir,
+                run->dynfile->path);
+            unlink(fname);
+        }
     }
 }
 
@@ -426,6 +451,82 @@ static bool fuzz_runVerifier(run_t* run) {
 }
 
 static bool fuzz_fetchInput(run_t* run) {
+    /* Periodic stats flush for non-dynamic states (dry run, static, minimize).
+     * Once in DYNAMIC_MAIN, input_prepareDynamicInput handles stats with
+     * full sched/decay/health counters -- so we stop here to avoid
+     * overwriting those with zeroes. */
+    {
+        static time_t lastStatsTime = 0;
+        time_t now = time(NULL);
+        time_t last = __atomic_load_n(&lastStatsTime, __ATOMIC_SEQ_CST);
+        if (now - last >= 150
+            && fuzz_getState(run->global) != _HF_STATE_DYNAMIC_MAIN
+            && __atomic_compare_exchange_n(
+                &lastStatsTime, &last, now, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+            honggfuzz_t* hfuzz = run->global;
+            uint64_t execs = ATOMIC_GET(hfuzz->cnts.mutationsCnt);
+            uint64_t pcs   = ATOMIC_GET(hfuzz->feedback.hwCnts.softCntPc);
+            uint64_t edges = ATOMIC_GET(hfuzz->feedback.hwCnts.softCntEdge);
+            uint64_t corpus = ATOMIC_GET(hfuzz->io.dynfileqCnt);
+            uint64_t crashes = ATOMIC_GET(hfuzz->cnts.crashesCnt);
+            uint64_t uniqueCrashes = ATOMIC_GET(hfuzz->cnts.uniqueCrashesCnt);
+            fuzzState_t st = fuzz_getState(hfuzz);
+            const char* state_str = (st == _HF_STATE_DYNAMIC_DRY_RUN) ? "dry_run"
+                                  : (st == _HF_STATE_DYNAMIC_MAIN)    ? "dynamic"
+                                  : (st == _HF_STATE_DYNAMIC_MINIMIZE) ? "minimize"
+                                  :                                      "static";
+
+            uint64_t timeouts = ATOMIC_GET(hfuzz->cnts.timeoutedCnt);
+            uint64_t execTimeSum = ATOMIC_GET(hfuzz->cnts.execTimeSum);
+            uint64_t execTimeMax = ATOMIC_GET(hfuzz->cnts.execTimeMax);
+            uint64_t execTimeSlow = ATOMIC_GET(hfuzz->cnts.execTimeSlowCnt);
+            uint64_t queueWraps = ATOMIC_GET(hfuzz->cnts.corpusQueueWraps);
+            uint32_t maxDepth = ATOMIC_GET(hfuzz->cnts.corpusMaxDepth);
+            uint64_t lastCovTime = ATOMIC_GET(hfuzz->timing.lastCovUpdate);
+            uint64_t plateauSecs = lastCovTime > 0 ? (uint64_t)(now - (time_t)lastCovTime) : 0;
+            uint64_t sampledCount = execs >> 8;
+            uint64_t avgExecTime = sampledCount > 0 ? (execTimeSum / sampledCount) : 0;
+
+            uint64_t testedFiles = ATOMIC_GET(hfuzz->io.testedFileCnt);
+            uint64_t totalFiles = hfuzz->io.fileCnt;
+            float dryRunPct = totalFiles > 0 ? (float)testedFiles * 100.0f / (float)totalFiles : 0.0f;
+
+            fprintf(stderr, "[hfuzz_stats] state=%s execs=%zu pcs=%zu edges=%zu "
+                    "corpus=%zu crashes=%zu/%zu threads=%zu",
+                    state_str, (size_t)execs, (size_t)pcs, (size_t)edges,
+                    (size_t)corpus, (size_t)uniqueCrashes, (size_t)crashes,
+                    (size_t)hfuzz->threads.threadsMax);
+            if (st == _HF_STATE_DYNAMIC_DRY_RUN) {
+                fprintf(stderr, " dry_run_progress=%zu/%zu (%.1f%%)",
+                        (size_t)testedFiles, (size_t)totalFiles, (double)dryRunPct);
+            }
+            fprintf(stderr, "\n");
+
+            if (execs > 0) {
+                uint64_t truncatedTooLarge = ATOMIC_GET(hfuzz->cnts.inputsTruncatedTooLarge);
+                if (hfuzz->feedback.covFeedbackMap) {
+                    for (size_t i = 0; i < hfuzz->threads.threadsMax; i++) {
+                        truncatedTooLarge += ATOMIC_GET(hfuzz->feedback.covFeedbackMap->pidInputsTruncatedCnt[i].val);
+                    }
+                }
+                hfuzz_metrics_log_stats(
+                    execs, pcs, edges, 0, 0,
+                    /* sched (not available outside dynamic mode) */
+                    0, 0.0f, 0.0f, 0.0f, 0.0f, 0, 0.0f, 0, 0, 0,
+                    /* decay (not available outside dynamic mode) */
+                    0, 0, 0, 0, 0, corpus, 0,
+                    /* health */
+                    avgExecTime, execTimeMax, execTimeSlow, 0.0f,
+                    plateauSecs, queueWraps, maxDepth,
+                    /* diff-fuzz */
+                    uniqueCrashes, crashes, timeouts, 0, 0, 0, 0, 0, 0,
+                    state_str, testedFiles, totalFiles,
+                    truncatedTooLarge
+                );
+            }
+        }
+    }
+
     {
         fuzzState_t st = fuzz_getState(run->global);
         if (st == _HF_STATE_DYNAMIC_DRY_RUN) {
@@ -524,6 +625,24 @@ static void fuzz_fuzzLoop(run_t* run) {
     {
         uint64_t exec_time_us = util_timeNowUSecs() - run->timeStartedUSecs;
         hfuzz_metrics_log_execution(run->dynfile->size, exec_time_us);
+
+        /* Sample every 256th execution for avg/slow stats (matches dashboard's >> 8 divisor) */
+        uint64_t mutCnt = ATOMIC_GET(run->global->cnts.mutationsCnt);
+        if ((mutCnt & 0xFF) == 0) {
+            ATOMIC_POST_ADD(run->global->cnts.execTimeSum, exec_time_us);
+            uint64_t sampledCount = mutCnt >> 8;
+            if (sampledCount > 1) {
+                uint64_t avg = ATOMIC_GET(run->global->cnts.execTimeSum) / sampledCount;
+                if (exec_time_us > avg * 10) {
+                    ATOMIC_POST_INC(run->global->cnts.execTimeSlowCnt);
+                }
+            }
+        }
+        /* Always track max (race-tolerant, same pattern as energyMax) */
+        uint64_t curMax = ATOMIC_GET(run->global->cnts.execTimeMax);
+        if (exec_time_us > curMax) {
+            ATOMIC_SET(run->global->cnts.execTimeMax, exec_time_us);
+        }
     }
 
     if (run->global->feedback.dynFileMethod != _HF_DYNFILE_NONE) {
@@ -683,7 +802,9 @@ static void* fuzz_threadNew(void* arg) {
     }
 
     size_t j = ATOMIC_PRE_INC(run.global->threads.threadsFinished);
-    LOG_I("Terminating thread no. #%" PRId32 ", left: %zu", fuzzNo, hfuzz->threads.threadsMax - j);
+    size_t total = hfuzz->threads.threadsMax;
+    LOG_I("Terminating thread no. #%" PRId32 ", left: %zu", fuzzNo,
+          j < total ? total - j : 0);
     return NULL;
 }
 
@@ -708,6 +829,7 @@ void fuzz_threadsStart(honggfuzz_t* hfuzz) {
     } else if (hfuzz->feedback.dynFileMethod != _HF_DYNFILE_NONE) {
         LOG_I("Entering phase 1/3: Dry Run");
         hfuzz->feedback.state = _HF_STATE_DYNAMIC_DRY_RUN;
+
     } else {
         LOG_I("Entering phase: Static");
         hfuzz->feedback.state = _HF_STATE_STATIC;

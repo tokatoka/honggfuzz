@@ -1,6 +1,5 @@
 #include "fuzzing_session.h"
 #include "metrics_logger.h"
-#include "fuzzer_corpus_collector.h"
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -194,9 +193,6 @@ void FuzzingSession::initialize(const std::string& fuzz_target_name,
     std::cerr << "[FuzzingSession] Logging session start..." << std::endl;
     log_session_start();
 
-    // Initialize corpus collector to get corpus stats from fuzzing engine
-    FuzzerCorpusCollector::init();
-
     // Mark as initialized to prevent re-initialization (honggfuzz may call LLVMFuzzerInitialize multiple times)
     m_initialized = true;
 
@@ -232,26 +228,7 @@ void FuzzingSession::log_execution() {
     }
 
     if (m_logging_enabled && should_log_metrics) {
-        // Update corpus size from fuzzing engine (if available)
-        FuzzerCorpusCollector::init();
-        uint64_t actual_corpus_size_bytes = FuzzerCorpusCollector::get_corpus_size_bytes();
-        if (actual_corpus_size_bytes > 0) {
-            m_corpus_size.store(actual_corpus_size_bytes);
-        } else {
-            // Fallback: estimate based on average input size if corpus not available
-            uint64_t total_execs = m_total_executions.load();
-            uint64_t total_bytes = m_total_input_bytes.load();
-            uint64_t avg_input_size = total_execs > 0
-                ? (total_bytes / total_execs)
-                : 1024;  // Default 1KB estimate if no data yet
-            uint64_t estimated_corpus = total_execs * std::max(avg_input_size, 1UL);
-            m_corpus_size.store(estimated_corpus);
-        }
-
-        // Update memory peak
         update_memory_peak();
-
-        // Log periodic metrics (prints and DB enqueues are time-based, once per minute)
         log_periodic_metrics();
     }
 }
@@ -402,9 +379,7 @@ void FuzzingSession::log_session_end(const std::string& status) {
     // Ensure connection is alive before final logging operations
     coverage_logger.ensure_connection();
 
-    // Get corpus diversity score from fuzzing engine
-    FuzzerCorpusCollector::init();
-    float corpus_diversity_score = FuzzerCorpusCollector::get_corpus_diversity_score();
+    float corpus_diversity_score = 0.0f;
 
     std::cerr << "[FuzzingSession] Session " << m_session_id << " ended. "
               << "Executions: " << total_executions
@@ -439,9 +414,7 @@ void FuzzingSession::log_periodic_metrics() {
     }
     uint64_t memory_usage_mb = usage.ru_maxrss / 1024; // Convert KB to MB
 
-    // Get corpus diversity score from fuzzing engine
-    FuzzerCorpusCollector::init();
-    float corpus_diversity_score = FuzzerCorpusCollector::get_corpus_diversity_score();
+    float corpus_diversity_score = 0.0f;
 
     // Calculate execution rates for display
     float executions_per_second = static_cast<float>(m_total_executions.load()) / (duration.count() + 1);

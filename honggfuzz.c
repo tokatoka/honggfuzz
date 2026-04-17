@@ -723,6 +723,10 @@ int main(int argc, char** argv) {
     /* Initialize metrics logging BEFORE starting fuzz threads (so coverage registration works) */
     hfuzz_metrics_session_init(hfuzz.exe.cmdline[0], argc, myargs);
 
+    hfuzz_metrics_register_coverage_feedback(
+        hfuzz.feedback.covFeedbackMap->pcGuardMap,
+        &hfuzz.feedback.covFeedbackMap->guardNb);
+
     fuzz_threadsStart(&hfuzz);
 
     pthread_t sigthread;

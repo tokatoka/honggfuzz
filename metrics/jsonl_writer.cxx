@@ -20,7 +20,7 @@ bool JsonlSink::open(const std::string& path) {
         } catch (const std::exception& e) {
             std::cerr << "[JsonlSink] WARNING: Failed to create directory for "
                       << path << ": " << e.what() << std::endl;
-            // Continue anyway — the directory might already exist.
+            // Continue anyway -- the directory might already exist.
         }
     }
 
