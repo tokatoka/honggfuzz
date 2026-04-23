@@ -77,6 +77,7 @@ ifeq ($(SOLFUZZ_METRICS_ENABLED),1)
     endif
 
     COMMON_LDFLAGS += -lstdc++ -lpthread -ldl
+    HONGGFUZZ_LDFLAGS += -Wl,--export-dynamic-symbol='hfuzz_metrics_bridge_*'
     $(info Honggfuzz: Building with inline metrics (SOLFUZZ_METRICS_ENABLED=1))
 endif
 
@@ -372,7 +373,7 @@ mac/arch.o: mac/arch.c mac/mach_exc.h mac/mach_excServer.h
 	$(CC) -fPIC -shared $(CFLAGS) -o $@ $<
 
 $(BIN): $(OBJS) $(LCOMMON_ARCH) $(METRICS_OBJS)
-	$(LD) -o $(BIN) $(OBJS) $(METRICS_OBJS) $(LCOMMON_ARCH) $(LDFLAGS)
+	$(LD) -o $(BIN) $(OBJS) $(METRICS_OBJS) $(LCOMMON_ARCH) $(LDFLAGS) $(HONGGFUZZ_LDFLAGS)
 
 $(HFUZZ_CC_BIN): $(LCOMMON_ARCH) $(LHFUZZ_ARCH) $(LNETDRIVER_ARCH) $(HFUZZ_CC_SRCS)
 	$(LD) -o $@ $(HFUZZ_CC_SRCS) $(LCOMMON_ARCH) $(LDFLAGS) $(CFLAGS) $(CFLAGS_BLOCKS) -D_HFUZZ_INC_PATH=$(HFUZZ_INC)
