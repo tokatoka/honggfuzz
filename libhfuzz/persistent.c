@@ -119,12 +119,17 @@ void HF_ITER(const uint8_t** buf_ptr, size_t* len_ptr) {
 /* Proto parse counter accessors (defined in libprotobuf-mutator libfuzzer_macro.cc,
    linked into the same process).  We accumulate deltas into shared memory so the
    honggfuzz parent can read the aggregate across all child processes. */
-__attribute__((weak)) uint64_t solfuzz_proto_test_one_input_calls(void);
-__attribute__((weak)) uint64_t solfuzz_proto_test_one_input_runs(void);
-__attribute__((weak)) uint64_t solfuzz_lpm_mutate_calls(void);
-__attribute__((weak)) uint64_t solfuzz_lpm_crossover_calls(void);
-__attribute__((weak)) uint64_t solfuzz_lpm_parse_fail_calls(void);
-__attribute__((weak)) uint64_t solfuzz_postprocessor_calls(void);
+__attribute__((weak)) uint64_t solfuzz_proto_parse_calls(void);
+__attribute__((weak)) uint64_t solfuzz_proto_parse_successes(void);
+__attribute__((weak)) uint64_t solfuzz_kutator_mutate_calls(void);
+__attribute__((weak)) uint64_t solfuzz_kutator_crossover_calls(void);
+__attribute__((weak)) uint64_t solfuzz_kutator_parse_success_calls(void);
+__attribute__((weak)) uint64_t solfuzz_kutator_parse_fail_calls(void);
+__attribute__((weak)) uint64_t solfuzz_kutator_encode_overflow(void);
+__attribute__((weak)) uint64_t solfuzz_kutator_no_candidates(void);
+__attribute__((weak)) uint32_t solfuzz_kutator_kind_num(void);
+__attribute__((weak)) uint64_t solfuzz_kutator_kind_count(uint32_t idx);
+__attribute__((weak)) const char* solfuzz_kutator_kind_name(uint32_t idx);
 __attribute__((weak)) uint64_t solfuzz_elf_fixup_ok_calls(void);
 __attribute__((weak)) uint64_t solfuzz_exec_fail_calls(void);
 __attribute__((weak)) uint64_t solfuzz_verify_calls(void);
@@ -149,29 +154,58 @@ static void              HonggfuzzRunOneInput(const uint8_t* buf, size_t len) {
     instrument8BitCountersCount();
     instrumentCheckStackDepth();
 
-    if (solfuzz_proto_test_one_input_calls) {
+    if (solfuzz_proto_parse_calls) {
         ATOMIC_SET(globalCovFeedback->pidProtoParseCallsCnt[my_thread_no].val,
-            solfuzz_proto_test_one_input_calls());
+            solfuzz_proto_parse_calls());
     }
-    if (solfuzz_proto_test_one_input_runs) {
+    if (solfuzz_proto_parse_successes) {
         ATOMIC_SET(globalCovFeedback->pidProtoParseSuccessesCnt[my_thread_no].val,
-            solfuzz_proto_test_one_input_runs());
+            solfuzz_proto_parse_successes());
     }
-    if (solfuzz_lpm_mutate_calls) {
-        ATOMIC_SET(globalCovFeedback->pidLpmMutateCnt[my_thread_no].val,
-            solfuzz_lpm_mutate_calls());
+    if (solfuzz_kutator_mutate_calls) {
+        ATOMIC_SET(globalCovFeedback->pidKutatorMutateCnt[my_thread_no].val,
+            solfuzz_kutator_mutate_calls());
     }
-    if (solfuzz_lpm_crossover_calls) {
-        ATOMIC_SET(globalCovFeedback->pidLpmCrossOverCnt[my_thread_no].val,
-            solfuzz_lpm_crossover_calls());
+    if (solfuzz_kutator_crossover_calls) {
+        ATOMIC_SET(globalCovFeedback->pidKutatorCrossOverCnt[my_thread_no].val,
+            solfuzz_kutator_crossover_calls());
     }
-    if (solfuzz_lpm_parse_fail_calls) {
-        ATOMIC_SET(globalCovFeedback->pidLpmParseFailCnt[my_thread_no].val,
-            solfuzz_lpm_parse_fail_calls());
+    if (solfuzz_kutator_parse_success_calls) {
+        ATOMIC_SET(globalCovFeedback->pidKutatorParseSuccessCnt[my_thread_no].val,
+            solfuzz_kutator_parse_success_calls());
     }
-    if (solfuzz_postprocessor_calls) {
-        ATOMIC_SET(globalCovFeedback->pidPostProcessorCnt[my_thread_no].val,
-            solfuzz_postprocessor_calls());
+    if (solfuzz_kutator_parse_fail_calls) {
+        ATOMIC_SET(globalCovFeedback->pidKutatorParseFailCnt[my_thread_no].val,
+            solfuzz_kutator_parse_fail_calls());
+    }
+    if (solfuzz_kutator_encode_overflow) {
+        ATOMIC_SET(globalCovFeedback->pidKutatorEncodeOverflow[my_thread_no].val,
+            solfuzz_kutator_encode_overflow());
+    }
+    if (solfuzz_kutator_no_candidates) {
+        ATOMIC_SET(globalCovFeedback->pidKutatorNoCandidates[my_thread_no].val,
+            solfuzz_kutator_no_candidates());
+    }
+    if (solfuzz_kutator_kind_num && solfuzz_kutator_kind_count) {
+        uint32_t n = solfuzz_kutator_kind_num();
+        if (n > _HF_KUTATOR_KIND_MAX) n = _HF_KUTATOR_KIND_MAX;
+        atomic_store_explicit(&globalCovFeedback->kutatorKindNum, n, memory_order_release);
+        for (uint32_t i = 0; i < n; i++) {
+            ATOMIC_SET(globalCovFeedback->pidKutatorKind[i][my_thread_no].val,
+                solfuzz_kutator_kind_count(i));
+            if (solfuzz_kutator_kind_name &&
+                !atomic_load_explicit(&globalCovFeedback->kutatorKindNameReady[i], memory_order_acquire)) {
+                uint8_t expected = 0;
+                if (atomic_compare_exchange_strong_explicit(
+                        &globalCovFeedback->kutatorKindNameReady[i],
+                        &expected, 1, memory_order_acq_rel, memory_order_acquire)) {
+                    const char* name = solfuzz_kutator_kind_name(i);
+                    snprintf(globalCovFeedback->kutatorKindNames[i],
+                             _HF_KUTATOR_NAME_MAX, "%s", name ? name : "unknown");
+                    atomic_store_explicit(&globalCovFeedback->kutatorKindNameReady[i], 2, memory_order_release);
+                }
+            }
+        }
     }
     if (solfuzz_elf_fixup_ok_calls) {
         ATOMIC_SET(globalCovFeedback->pidElfFixupOkCnt[my_thread_no].val,

@@ -840,19 +840,29 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                     {
                         feedback_t* cov = hfuzz->feedback.covFeedbackMap;
                         uint64_t ppCalls = 0, ppSucc = 0, cmCalls = 0, cmSucc = 0;
-                        uint64_t lpmMutate = 0, lpmCrossOver = 0, lpmParseFail = 0;
-                        uint64_t postProc = 0, elfFixupOk = 0, execFail = 0, verifyCalls = 0;
+                        uint64_t kutMutate = 0, kutCrossOver = 0, kutParseOk = 0, kutParseFail = 0;
+                        uint64_t encOverflow = 0, noCandidates = 0;
+                        uint32_t kindNum = 0;
+                        uint64_t kindCounts[_HF_KUTATOR_KIND_MAX] = {0};
+                        uint64_t elfFixupOk = 0, execFail = 0, verifyCalls = 0;
                         if (cov) {
+                            kindNum = atomic_load_explicit(&cov->kutatorKindNum, memory_order_acquire);
+                            if (kindNum > _HF_KUTATOR_KIND_MAX) kindNum = _HF_KUTATOR_KIND_MAX;
                             for (size_t t = 0; t < hfuzz->threads.threadsMax; t++) {
                                 ppCalls += ATOMIC_GET(cov->pidProtoParseCallsCnt[t].val);
                                 ppSucc  += ATOMIC_GET(cov->pidProtoParseSuccessesCnt[t].val);
                                 cmCalls += ATOMIC_GET(cov->pidCustomMutatorCallsCnt[t].val);
                                 cmSucc  += ATOMIC_GET(cov->pidCustomMutatorSuccessesCnt[t].val);
                                 childTruncated += ATOMIC_GET(cov->pidInputsTruncatedCnt[t].val);
-                                lpmMutate    += ATOMIC_GET(cov->pidLpmMutateCnt[t].val);
-                                lpmCrossOver += ATOMIC_GET(cov->pidLpmCrossOverCnt[t].val);
-                                lpmParseFail += ATOMIC_GET(cov->pidLpmParseFailCnt[t].val);
-                                postProc     += ATOMIC_GET(cov->pidPostProcessorCnt[t].val);
+                                kutMutate    += ATOMIC_GET(cov->pidKutatorMutateCnt[t].val);
+                                kutCrossOver += ATOMIC_GET(cov->pidKutatorCrossOverCnt[t].val);
+                                kutParseOk   += ATOMIC_GET(cov->pidKutatorParseSuccessCnt[t].val);
+                                kutParseFail += ATOMIC_GET(cov->pidKutatorParseFailCnt[t].val);
+                                encOverflow  += ATOMIC_GET(cov->pidKutatorEncodeOverflow[t].val);
+                                noCandidates += ATOMIC_GET(cov->pidKutatorNoCandidates[t].val);
+                                for (uint32_t k = 0; k < kindNum; k++) {
+                                    kindCounts[k] += ATOMIC_GET(cov->pidKutatorKind[k][t].val);
+                                }
                                 elfFixupOk   += ATOMIC_GET(cov->pidElfFixupOkCnt[t].val);
                                 execFail     += ATOMIC_GET(cov->pidExecFailCnt[t].val);
                                 verifyCalls  += ATOMIC_GET(cov->pidVerifyCnt[t].val);
@@ -862,15 +872,38 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                         uint64_t protoRounds = ATOMIC_GET(hfuzz->mutate.protoRoundCnt);
                         uint64_t protoScanOk = ATOMIC_GET(hfuzz->mutate.protoScanOkCnt);
                         uint64_t totalRounds = ATOMIC_GET(hfuzz->mutate.totalRoundCnt);
+                        char kindsBuf[512] = {0};
+                        {
+                            int pos = 0;
+                            int ret = snprintf(kindsBuf, sizeof(kindsBuf), "kinds{");
+                            if (ret > 0 && (size_t)ret < sizeof(kindsBuf)) pos = ret;
+                            for (uint32_t k = 0; k < kindNum && pos < (int)sizeof(kindsBuf) - 32; k++) {
+                                const char* name = "?";
+                                if (cov && atomic_load_explicit(&cov->kutatorKindNameReady[k], memory_order_acquire) == 2) {
+                                    name = cov->kutatorKindNames[k];
+                                }
+                                ret = snprintf(kindsBuf + pos, sizeof(kindsBuf) - (size_t)pos,
+                                    "%s%s=%zu", k > 0 ? " " : "", name, (size_t)kindCounts[k]);
+                                if (ret < 0 || (size_t)ret >= sizeof(kindsBuf) - (size_t)pos) break;
+                                pos += ret;
+                            }
+                            if (pos < (int)sizeof(kindsBuf) - 1) {
+                                snprintf(kindsBuf + pos, sizeof(kindsBuf) - (size_t)pos, "}");
+                            }
+                        }
                         LOG_I("[MUTATION-HEALTH] proto_parse=%zu/%zu (%.1f%%) custom_mutator=%zu/%zu"
                               " proto_rounds=%zu/%zu scan_ok=%zu"
-                              " lpm_mut=%zu xover=%zu parse_fail=%zu"
-                              " postproc=%zu elf_ok=%zu exec_fail=%zu verify=%zu",
+                              " kutator_mut=%zu xover=%zu parse_ok=%zu parse_fail=%zu"
+                              " enc_overflow=%zu no_candidates=%zu"
+                              " %s"
+                              " elf_ok=%zu exec_fail=%zu verify=%zu",
                               (size_t)ppSucc, (size_t)ppCalls, (double)parseRate,
                               (size_t)cmSucc, (size_t)cmCalls,
                               (size_t)protoRounds, (size_t)totalRounds, (size_t)protoScanOk,
-                              (size_t)lpmMutate, (size_t)lpmCrossOver, (size_t)lpmParseFail,
-                              (size_t)postProc, (size_t)elfFixupOk, (size_t)execFail, (size_t)verifyCalls);
+                              (size_t)kutMutate, (size_t)kutCrossOver, (size_t)kutParseOk, (size_t)kutParseFail,
+                              (size_t)encOverflow, (size_t)noCandidates,
+                              kindsBuf,
+                              (size_t)elfFixupOk, (size_t)execFail, (size_t)verifyCalls);
                     }
 
                     /* Defer the metrics bridge call until after the rwlock is released.
@@ -1004,17 +1037,26 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
         feedback_t* cov = run->global->feedback.covFeedbackMap;
         if (cov) {
             uint64_t ppCalls = 0, ppSucc = 0, cmCalls = 0, cmSucc = 0;
-            uint64_t lpmMut = 0, lpmXover = 0, lpmFail = 0;
-            uint64_t postProc = 0, elfOk = 0, execFail = 0, verify = 0;
+            uint64_t kutMut = 0, kutXover = 0, kutParseOk = 0, kutFail = 0;
+            uint64_t encOvf = 0, noCand = 0;
+            uint32_t kindNum2 = atomic_load_explicit(&cov->kutatorKindNum, memory_order_acquire);
+            if (kindNum2 > _HF_KUTATOR_KIND_MAX) kindNum2 = _HF_KUTATOR_KIND_MAX;
+            uint64_t kindCounts2[_HF_KUTATOR_KIND_MAX] = {0};
+            uint64_t elfOk = 0, execFail = 0, verify = 0;
             for (size_t t = 0; t < run->global->threads.threadsMax; t++) {
                 ppCalls  += ATOMIC_GET(cov->pidProtoParseCallsCnt[t].val);
                 ppSucc   += ATOMIC_GET(cov->pidProtoParseSuccessesCnt[t].val);
                 cmCalls  += ATOMIC_GET(cov->pidCustomMutatorCallsCnt[t].val);
                 cmSucc   += ATOMIC_GET(cov->pidCustomMutatorSuccessesCnt[t].val);
-                lpmMut   += ATOMIC_GET(cov->pidLpmMutateCnt[t].val);
-                lpmXover += ATOMIC_GET(cov->pidLpmCrossOverCnt[t].val);
-                lpmFail  += ATOMIC_GET(cov->pidLpmParseFailCnt[t].val);
-                postProc += ATOMIC_GET(cov->pidPostProcessorCnt[t].val);
+                kutMut   += ATOMIC_GET(cov->pidKutatorMutateCnt[t].val);
+                kutXover += ATOMIC_GET(cov->pidKutatorCrossOverCnt[t].val);
+                kutParseOk += ATOMIC_GET(cov->pidKutatorParseSuccessCnt[t].val);
+                kutFail  += ATOMIC_GET(cov->pidKutatorParseFailCnt[t].val);
+                encOvf   += ATOMIC_GET(cov->pidKutatorEncodeOverflow[t].val);
+                noCand   += ATOMIC_GET(cov->pidKutatorNoCandidates[t].val);
+                for (uint32_t k = 0; k < kindNum2; k++) {
+                    kindCounts2[k] += ATOMIC_GET(cov->pidKutatorKind[k][t].val);
+                }
                 elfOk    += ATOMIC_GET(cov->pidElfFixupOkCnt[t].val);
                 execFail += ATOMIC_GET(cov->pidExecFailCnt[t].val);
                 verify   += ATOMIC_GET(cov->pidVerifyCnt[t].val);
@@ -1023,10 +1065,18 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                 uint64_t protoRounds = ATOMIC_GET(run->global->mutate.protoRoundCnt);
                 uint64_t protoScanOk = ATOMIC_GET(run->global->mutate.protoScanOkCnt);
                 uint64_t totalRounds = ATOMIC_GET(run->global->mutate.totalRoundCnt);
-                hfuzz_metrics_log_mutation_health(ppCalls, ppSucc, cmCalls, cmSucc,
+                const char* kindNames2[_HF_KUTATOR_KIND_MAX];
+                for (uint32_t k = 0; k < kindNum2; k++) {
+                    kindNames2[k] = atomic_load_explicit(&cov->kutatorKindNameReady[k], memory_order_acquire) == 2
+                        ? cov->kutatorKindNames[k] : "unknown";
+                }
+                hfuzz_metrics_log_mutation_health(s->mutationsCnt,
+                                                  ppCalls, ppSucc, cmCalls, cmSucc,
                                                   protoRounds, protoScanOk, totalRounds,
-                                                  lpmMut, lpmXover, lpmFail,
-                                                  postProc, elfOk, execFail, verify);
+                                                  kutMut, kutXover, kutParseOk, kutFail,
+                                                  encOvf, noCand,
+                                                  kindCounts2, kindNames2, kindNum2,
+                                                  elfOk, execFail, verify);
             }
         }
     }

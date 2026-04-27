@@ -1438,12 +1438,17 @@ bool instrumentConstAvail(void) {
  * These helpers update per-thread counters stored in the shared
  * globalCovFeedback structure so the supervising process can aggregate them.
  */
+__attribute__((weak)) void solfuzz_proto_parse_call_inc(void);
+__attribute__((weak)) void solfuzz_proto_parse_success_inc(void);
+
 void instrumentReportProtoParseCall(void) {
     ATOMIC_POST_INC(globalCovFeedback->pidProtoParseCallsCnt[my_thread_no].val);
+    if (solfuzz_proto_parse_call_inc) solfuzz_proto_parse_call_inc();
 }
 
 void instrumentReportProtoParseSuccess(void) {
     ATOMIC_POST_INC(globalCovFeedback->pidProtoParseSuccessesCnt[my_thread_no].val);
+    if (solfuzz_proto_parse_success_inc) solfuzz_proto_parse_success_inc();
 }
 
 void instrumentReportExecFail(void) {

@@ -12,6 +12,19 @@ static std::string getenv_or(const char* k, const char* dflt) {
     const char* v = std::getenv(k);
     return (v && *v) ? std::string(v) : std::string(dflt);
 }
+
+static std::string sanitize_kind_col(const char* raw_name) {
+    const char* src = raw_name ? raw_name : "unknown";
+    std::string safe;
+    for (const char* p = src; *p; p++) {
+        if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+            (*p >= '0' && *p <= '9') || *p == '_') {
+            safe += *p;
+        }
+    }
+    if (safe.empty()) safe = "unknown";
+    return "kind_" + safe + "_cnt";
+}
 } // namespace
 
 #ifdef SOLFUZZ_CLICKHOUSE_ENABLED
@@ -604,21 +617,93 @@ static const std::vector<TableSchema> get_table_schemas() {
             "execution_events",
             {
                 {"session_id", "String"},
+                {"fuzzer_name", "String"},
+                {"harness_name", "String"},
+                {"fuzz_target", "String"},
+                {"target_names", "Array(String)"},
+                {"target_paths", "Array(String)"},
+                {"program_id", "String"},
+                {"syscall_name", "String"},
+                {"user_name", "String"},
+                {"host_name", "String"},
+                {"task_id", "String"},
+                {"bundle_id", "String"},
+                {"asset_id", "String"},
+                {"organization", "String"},
+                {"project", "String"},
+                {"lineage_name", "String"},
+                {"corpus_group", "String"},
+                {"task_type", "String"},
                 {"event_time", "DateTime64(3)"},
-                {"total_executions", "UInt32"},
-                {"total_crashes", "UInt32"},
-                {"total_hangs", "UInt32"},
+                {"fuzzer_state", "LowCardinality(String)"},
+                {"dry_run_tested", "UInt64"},
+                {"dry_run_total", "UInt64"},
+                {"total_executions", "UInt64"},
+                {"total_crashes", "UInt64"},
+                {"total_hangs", "UInt64"},
                 {"cpu_usage_pct", "Float32"},
                 {"memory_usage_mb", "UInt64"},
                 {"num_coverage_lines", "UInt32"},
                 {"num_coverage_branches", "UInt32"},
                 {"num_coverage_functions", "UInt32"},
+                {"coverage_cmp", "UInt64"},
+                {"coverage_edge_bucket", "UInt64"},
                 {"corpus_size", "UInt64"},
                 {"corpus_diversity_score", "Float32"},
                 {"total_mutations_executed", "UInt64"},
                 {"total_mutations_successful", "UInt64"},
                 {"mutation_success_rate", "Float32"},
                 {"new_features_discovered", "UInt64"},
+                {"execs_delta", "UInt64"},
+                {"proto_parse_calls", "UInt64"},
+                {"proto_parse_successes", "UInt64"},
+                {"custom_mutator_calls", "UInt64"},
+                {"custom_mutator_successes", "UInt64"},
+                {"sched_total", "UInt64"},
+                {"repeat_pct", "Float32"},
+                {"high_priority_pct", "Float32"},
+                {"low_priority_pct", "Float32"},
+                {"phase2_pct", "Float32"},
+                {"avg_energy", "UInt64"},
+                {"avg_iters", "Float32"},
+                {"max_iters", "UInt64"},
+                {"energy_min", "UInt64"},
+                {"energy_max", "UInt64"},
+                {"novelty_decay_cnt", "UInt64"},
+                {"fresh_boost_cnt", "UInt64"},
+                {"stale_penalty_cnt", "UInt64"},
+                {"diminishing_cnt", "UInt64"},
+                {"depth_penalty_cnt", "UInt64"},
+                {"corpus_count", "UInt64"},
+                {"global_avg_energy", "UInt64"},
+                {"exec_avg_us", "UInt64"},
+                {"exec_max_us", "UInt64"},
+                {"slow_exec_cnt", "UInt64"},
+                {"mut_hit_rate_pct", "Float32"},
+                {"plateau_secs", "UInt64"},
+                {"queue_wraps", "UInt64"},
+                {"max_depth", "UInt32"},
+                {"unique_crashes", "UInt64"},
+                {"timeouts", "UInt64"},
+                {"fertile_boosts", "UInt64"},
+                {"saturated_lineages", "UInt64"},
+                {"explore_selects", "UInt64"},
+                {"secs_since_crash", "UInt64"},
+                {"stagnation_secs", "UInt64"},
+                {"corpus_growth", "UInt64"},
+                {"inputs_truncated_too_large", "UInt64"},
+                {"proto_round_cnt", "UInt64"},
+                {"proto_scan_ok_cnt", "UInt64"},
+                {"total_round_cnt", "UInt64"},
+                {"lpm_mutate_cnt", "UInt64"},
+                {"lpm_crossover_cnt", "UInt64"},
+                {"lpm_parse_success_cnt", "UInt64"},
+                {"lpm_parse_fail_cnt", "UInt64"},
+                {"encode_overflow_cnt", "UInt64"},
+                {"no_candidates_cnt", "UInt64"},
+                {"elf_fixup_ok_cnt", "UInt64"},
+                {"exec_fail_cnt", "UInt64"},
+                {"verify_cnt", "UInt64"},
             },
             "toYYYYMM(event_time)",
             {"event_time", "session_id"}
@@ -752,11 +837,11 @@ static std::string generate_create_table_ddl(const TableSchema& schema) {
 // Helper: Get existing column names from ClickHouse table
 static std::set<std::string> get_existing_columns(clickhouse::Client& client, const std::string& database, const std::string& table_name) {
     std::set<std::string> columns;
-    
+
     try {
-        std::string query = "SELECT name FROM system.columns WHERE database = '" + database 
+        std::string query = "SELECT name FROM system.columns WHERE database = '" + database
                           + "' AND table = '" + table_name + "'";
-        
+
         client.Select(query, [&columns](const clickhouse::Block& block) {
             if (block.GetColumnCount() > 0) {
                 auto col_ptr = block[0];
@@ -770,10 +855,10 @@ static std::set<std::string> get_existing_columns(clickhouse::Client& client, co
             }
         });
     } catch (const std::exception& e) {
-        std::cerr << "[MetricsLogger] WARNING: Failed to query existing columns for table '" 
+        std::cerr << "[MetricsLogger] WARNING: Failed to query existing columns for table '"
                   << table_name << "': " << e.what() << std::endl;
     }
-    
+
     return columns;
 }
 
@@ -799,7 +884,7 @@ void MetricsLogger::ensure_tables_() {
             
             // Step 2: Check existing columns and compare with desired schema
             std::set<std::string> existing_cols = get_existing_columns(client_->c(), ch_.database, schema.name);
-            
+
             if (!existing_cols.empty() && !schema.columns.empty()) {
                 // Find missing columns (columns in desired but not in existing)
                 std::vector<std::pair<std::string, std::string>> missing_cols;
@@ -808,36 +893,52 @@ void MetricsLogger::ensure_tables_() {
                         missing_cols.push_back(desired);
                     }
                 }
-                
+
                 // Add missing columns if any
                 if (!missing_cols.empty()) {
-                    std::cerr << "[MetricsLogger] Table '" << schema.name 
+                    std::cerr << "[MetricsLogger] Table '" << schema.name
                               << "' is missing " << missing_cols.size() << " column(s), adding them..." << std::endl;
-                    
+
                     for (const auto& col : missing_cols) {
                         try {
-                            std::string alter_sql = "ALTER TABLE " + schema.name 
+                            std::string alter_sql = "ALTER TABLE " + schema.name
                                                   + " ADD COLUMN IF NOT EXISTS " + col.first + " " + col.second;
-                            
-                            std::cerr << "[MetricsLogger] Adding column '" << col.first 
+
+                            std::cerr << "[MetricsLogger] Adding column '" << col.first
                                       << "' with type '" << col.second << "'..." << std::endl;
                             client_->c().Execute(alter_sql);
                             std::cerr << "[MetricsLogger] Successfully added column '" << col.first << "'" << std::endl;
                         } catch (const std::exception& e) {
-                            std::cerr << "[MetricsLogger] WARNING: Failed to add column '" << col.first 
+                            std::cerr << "[MetricsLogger] WARNING: Failed to add column '" << col.first
                                       << "' to table '" << schema.name << "': " << e.what() << std::endl;
                         }
                     }
                 } else {
-                    std::cerr << "[MetricsLogger] Table '" << schema.name 
-                              << "' schema is up-to-date (existing: " << existing_cols.size() 
+                    std::cerr << "[MetricsLogger] Table '" << schema.name
+                              << "' schema is up-to-date (existing: " << existing_cols.size()
                               << " columns, desired: " << schema.columns.size() << " columns)" << std::endl;
-                    
+
                     // Log if existing table has more columns than desired (which is OK)
                     if (existing_cols.size() > schema.columns.size()) {
-                        std::cerr << "[MetricsLogger] Note: Existing table has " 
-                                  << (existing_cols.size() - schema.columns.size()) 
+                        std::cerr << "[MetricsLogger] Note: Existing table has "
+                                  << (existing_cols.size() - schema.columns.size())
                                   << " additional column(s), which is acceptable (superset)" << std::endl;
+                    }
+                }
+            }
+
+            // Promote columns that were originally UInt32 to UInt64
+            if (schema.name == "execution_events" || schema.name == "session_events") {
+                const char* promote_cols[] = {"total_executions", "total_crashes", "total_hangs"};
+                for (const auto& col_name : promote_cols) {
+                    if (existing_cols.count(col_name)) {
+                        try {
+                            std::string sql = "ALTER TABLE " + schema.name
+                                            + " MODIFY COLUMN " + col_name + " UInt64";
+                            client_->c().Execute(sql);
+                        } catch (const std::exception&) {
+                            // Already UInt64 or unsupported — harmless
+                        }
                     }
                 }
             }
@@ -857,8 +958,34 @@ void MetricsLogger::ensure_tables_() {
         }
     }
 
-    std::cerr << "[MetricsLogger] Finished ensuring tables: " << success_count 
+    std::cerr << "[MetricsLogger] Finished ensuring tables: " << success_count
               << " succeeded, " << fail_count << " failed" << std::endl;
+}
+
+void MetricsLogger::ensure_kind_columns_(const char* const* kind_names, uint32_t kind_num) {
+    if (!ch_.enabled || !m_tables_initialized.load()) return;
+
+    std::lock_guard<std::mutex> lock(m_client_mutex);
+    if (!client_) {
+        try { ensure_client_unlocked_(); } catch (...) {}
+        if (!client_) return;
+    }
+
+    for (uint32_t k = 0; k < kind_num; k++) {
+        std::string col = sanitize_kind_col(kind_names[k]);
+
+        if (ensured_kind_columns_.count(col)) continue;
+
+        try {
+            std::string sql = "ALTER TABLE execution_events ADD COLUMN IF NOT EXISTS "
+                            + col + " UInt64 DEFAULT 0";
+            client_->c().Execute(sql);
+            ensured_kind_columns_.insert(col);
+        } catch (const std::exception& e) {
+            std::cerr << "[MetricsLogger] WARNING: Failed to add kind column '"
+                      << col << "': " << e.what() << std::endl;
+        }
+    }
 }
 #endif
 
@@ -1135,6 +1262,9 @@ void MetricsLogger::log_fuzzer_stats(
     uint64_t dry_run_total,
     uint64_t inputs_truncated_too_large)
 {
+    uint64_t prev = prev_total_executions_.exchange(total_executions);
+    uint64_t delta = (total_executions >= prev) ? total_executions - prev : 0;
+
     if (vector_enabled_.load()) {
         static const bool s_exec_events_enabled = [] {
             const char* v = std::getenv("SOLFUZZ_EXECUTION_EVENTS_ENABLE");
@@ -1145,11 +1275,11 @@ void MetricsLogger::log_fuzzer_stats(
             add_common_fields_(jb);
             jb.add_timestamp("event_time", now_epoch_ms());
             jb.add("fuzzer_state", fuzzer_state);
-            jb.add("dry_run_tested", static_cast<uint32_t>(dry_run_tested));
-            jb.add("dry_run_total", static_cast<uint32_t>(dry_run_total));
+            jb.add("dry_run_tested", dry_run_tested);
+            jb.add("dry_run_total", dry_run_total);
             jb.add("total_executions", total_executions);
             jb.add("total_crashes", total_crashes);
-            jb.add("total_hangs", static_cast<uint32_t>(0));
+            jb.add("total_hangs", static_cast<uint64_t>(0));
             jb.add("cpu_usage_pct", 0.0f);
             jb.add("memory_usage_mb", static_cast<uint64_t>(0));
             jb.add("num_coverage_lines", static_cast<uint32_t>(coverage_pcs));
@@ -1200,6 +1330,19 @@ void MetricsLogger::log_fuzzer_stats(
             jb.add("stagnation_secs", stagnation_secs);
             jb.add("corpus_growth", corpus_growth);
             jb.add("inputs_truncated_too_large", inputs_truncated_too_large);
+            jb.add("execs_delta", delta);
+            jb.add("proto_round_cnt", static_cast<uint64_t>(0));
+            jb.add("proto_scan_ok_cnt", static_cast<uint64_t>(0));
+            jb.add("total_round_cnt", static_cast<uint64_t>(0));
+            jb.add("lpm_mutate_cnt", static_cast<uint64_t>(0));
+            jb.add("lpm_crossover_cnt", static_cast<uint64_t>(0));
+            jb.add("lpm_parse_success_cnt", static_cast<uint64_t>(0));
+            jb.add("lpm_parse_fail_cnt", static_cast<uint64_t>(0));
+            jb.add("encode_overflow_cnt", static_cast<uint64_t>(0));
+            jb.add("no_candidates_cnt", static_cast<uint64_t>(0));
+            jb.add("elf_fixup_ok_cnt", static_cast<uint64_t>(0));
+            jb.add("exec_fail_cnt", static_cast<uint64_t>(0));
+            jb.add("verify_cnt", static_cast<uint64_t>(0));
             emit_jsonl_("execution_events", jb);
         }
     }
@@ -1211,24 +1354,27 @@ void MetricsLogger::log_fuzzer_stats(
 
     // Append common columns first
     append_common_columns_to_block_(&b);
-    
+
     // Table-specific columns - using execution_events table for fuzzer stats
     APPEND_DATETIME64_COLUMN(b, "event_time", now_epoch_ms_(), 3);
-    APPEND_UINT32_COLUMN(b, "total_executions", static_cast<uint32_t>(total_executions));
-    APPEND_UINT32_COLUMN(b, "total_crashes", static_cast<uint32_t>(total_crashes));
-    APPEND_UINT32_COLUMN(b, "total_hangs", 0);
+    APPEND_UINT64_COLUMN(b, "total_executions", total_executions);
+    APPEND_UINT64_COLUMN(b, "total_crashes", total_crashes);
+    APPEND_UINT64_COLUMN(b, "total_hangs", 0);
     APPEND_FLOAT32_COLUMN(b, "cpu_usage_pct", 0.0f);
     APPEND_UINT64_COLUMN(b, "memory_usage_mb", 0);
     APPEND_UINT32_COLUMN(b, "num_coverage_lines", static_cast<uint32_t>(coverage_pcs));
     APPEND_UINT32_COLUMN(b, "num_coverage_branches", static_cast<uint32_t>(coverage_edges));
     APPEND_UINT32_COLUMN(b, "num_coverage_functions", 0);
+    APPEND_UINT64_COLUMN(b, "coverage_cmp", coverage_cmp);
+    APPEND_UINT64_COLUMN(b, "coverage_edge_bucket", coverage_edge_bucket);
     APPEND_UINT64_COLUMN(b, "corpus_size", corpus_count);
     APPEND_FLOAT32_COLUMN(b, "corpus_diversity_score", 0.0f);
     APPEND_UINT64_COLUMN(b, "total_mutations_executed", sched_total);
     APPEND_UINT64_COLUMN(b, "total_mutations_successful", 0);
     APPEND_FLOAT32_COLUMN(b, "mutation_success_rate", mut_hit_rate_pct / 100.0f);
     APPEND_UINT64_COLUMN(b, "new_features_discovered", corpus_growth);
-    
+    APPEND_UINT64_COLUMN(b, "execs_delta", delta);
+
     // SCHED-STATS columns
     APPEND_UINT64_COLUMN(b, "sched_total", sched_total);
     APPEND_FLOAT32_COLUMN(b, "repeat_pct", repeat_pct);
@@ -1240,7 +1386,7 @@ void MetricsLogger::log_fuzzer_stats(
     APPEND_UINT64_COLUMN(b, "max_iters", max_iters);
     APPEND_UINT64_COLUMN(b, "energy_min", energy_min);
     APPEND_UINT64_COLUMN(b, "energy_max", energy_max);
-    
+
     // DECAY-STATS columns
     APPEND_UINT64_COLUMN(b, "novelty_decay_cnt", novelty_decay);
     APPEND_UINT64_COLUMN(b, "fresh_boost_cnt", fresh_boost);
@@ -1249,7 +1395,7 @@ void MetricsLogger::log_fuzzer_stats(
     APPEND_UINT64_COLUMN(b, "depth_penalty_cnt", depth_penalty);
     APPEND_UINT64_COLUMN(b, "corpus_count", corpus_count);
     APPEND_UINT64_COLUMN(b, "global_avg_energy", global_avg_energy);
-    
+
     // HEALTH-STATS columns
     APPEND_UINT64_COLUMN(b, "exec_avg_us", exec_avg_us);
     APPEND_UINT64_COLUMN(b, "exec_max_us", exec_max_us);
@@ -1258,7 +1404,7 @@ void MetricsLogger::log_fuzzer_stats(
     APPEND_UINT64_COLUMN(b, "plateau_secs", plateau_secs);
     APPEND_UINT64_COLUMN(b, "queue_wraps", queue_wraps);
     APPEND_UINT32_COLUMN(b, "max_depth", max_depth);
-    
+
     // DIFF-FUZZ-STATS columns
     APPEND_UINT64_COLUMN(b, "unique_crashes", unique_crashes);
     APPEND_UINT64_COLUMN(b, "timeouts", timeouts);
@@ -1268,6 +1414,28 @@ void MetricsLogger::log_fuzzer_stats(
     APPEND_UINT64_COLUMN(b, "secs_since_crash", secs_since_crash);
     APPEND_UINT64_COLUMN(b, "stagnation_secs", stagnation_secs);
     APPEND_UINT64_COLUMN(b, "corpus_growth", corpus_growth);
+    APPEND_STRING_COLUMN(b, "fuzzer_state", fuzzer_state);
+    APPEND_UINT64_COLUMN(b, "dry_run_tested", dry_run_tested);
+    APPEND_UINT64_COLUMN(b, "dry_run_total", dry_run_total);
+    APPEND_UINT64_COLUMN(b, "inputs_truncated_too_large", inputs_truncated_too_large);
+
+    // Mutation health columns (not available in this call path, default to 0)
+    APPEND_UINT64_COLUMN(b, "proto_parse_calls", 0);
+    APPEND_UINT64_COLUMN(b, "proto_parse_successes", 0);
+    APPEND_UINT64_COLUMN(b, "custom_mutator_calls", 0);
+    APPEND_UINT64_COLUMN(b, "custom_mutator_successes", 0);
+    APPEND_UINT64_COLUMN(b, "proto_round_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "proto_scan_ok_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "total_round_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "lpm_mutate_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "lpm_crossover_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "lpm_parse_success_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "lpm_parse_fail_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "encode_overflow_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "no_candidates_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "elf_fixup_ok_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "exec_fail_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "verify_cnt", 0);
 
     enqueue_insert_("execution_events", &b, "fuzzer_stats");
 #else
@@ -1346,9 +1514,9 @@ void MetricsLogger::log_execution_metrics(
 
     // Table-specific columns
     APPEND_DATETIME64_COLUMN(b, "event_time", now_epoch_ms_(), 3);
-    APPEND_UINT32_COLUMN(b, "total_executions", total_executions);
-    APPEND_UINT32_COLUMN(b, "total_crashes", total_crashes);
-    APPEND_UINT32_COLUMN(b, "total_hangs", total_hangs);
+    APPEND_UINT64_COLUMN(b, "total_executions", total_executions);
+    APPEND_UINT64_COLUMN(b, "total_crashes", total_crashes);
+    APPEND_UINT64_COLUMN(b, "total_hangs", total_hangs);
     APPEND_FLOAT32_COLUMN(b, "cpu_usage_pct", cpu_usage);
     APPEND_UINT64_COLUMN(b, "memory_usage_mb", memory_usage_mb);
     APPEND_UINT32_COLUMN(b, "num_coverage_lines", coverage_lines);
@@ -1367,6 +1535,7 @@ void MetricsLogger::log_execution_metrics(
 }
 
 void MetricsLogger::log_mutation_health(
+    uint64_t total_executions,
     uint64_t proto_parse_calls,
     uint64_t proto_parse_successes,
     uint64_t custom_mutator_calls,
@@ -1375,41 +1544,215 @@ void MetricsLogger::log_mutation_health(
     uint64_t proto_round_cnt,
     uint64_t proto_scan_ok_cnt,
     uint64_t total_round_cnt,
-    uint64_t lpm_mutate_cnt,
-    uint64_t lpm_crossover_cnt,
-    uint64_t lpm_parse_fail_cnt,
-    uint64_t postprocessor_cnt,
+    uint64_t kutator_mutate_cnt,
+    uint64_t kutator_crossover_cnt,
+    uint64_t kutator_parse_success_cnt,
+    uint64_t kutator_parse_fail_cnt,
+    uint64_t encode_overflow_cnt,
+    uint64_t no_candidates_cnt,
+    const uint64_t* kind_counts,
+    const char* const* kind_names,
+    uint32_t kind_num,
     uint64_t elf_fixup_ok_cnt,
     uint64_t exec_fail_cnt,
     uint64_t verify_cnt)
 {
-    static const bool s_exec_events_enabled = [] {
-        const char* v = std::getenv("SOLFUZZ_EXECUTION_EVENTS_ENABLE");
-        return v && std::string(v) == "1";
-    }();
-    if (!s_exec_events_enabled) return;
-
     if (vector_enabled_.load()) {
-        JsonBuilder jb;
-        add_common_fields_(jb);
-        jb.add_timestamp("event_time", now_epoch_ms());
-        jb.add("proto_parse_calls", proto_parse_calls);
-        jb.add("proto_parse_successes", proto_parse_successes);
-        jb.add("custom_mutator_calls", custom_mutator_calls);
-        jb.add("custom_mutator_successes", custom_mutator_successes);
-        jb.add("mutation_success_rate", rate);
-        jb.add("proto_round_cnt", proto_round_cnt);
-        jb.add("proto_scan_ok_cnt", proto_scan_ok_cnt);
-        jb.add("total_round_cnt", total_round_cnt);
-        jb.add("lpm_mutate_cnt", lpm_mutate_cnt);
-        jb.add("lpm_crossover_cnt", lpm_crossover_cnt);
-        jb.add("lpm_parse_fail_cnt", lpm_parse_fail_cnt);
-        jb.add("postprocessor_cnt", postprocessor_cnt);
-        jb.add("elf_fixup_ok_cnt", elf_fixup_ok_cnt);
-        jb.add("exec_fail_cnt", exec_fail_cnt);
-        jb.add("verify_cnt", verify_cnt);
-        emit_jsonl_("execution_events", jb);
+        static const bool s_exec_events_enabled = [] {
+            const char* v = std::getenv("SOLFUZZ_EXECUTION_EVENTS_ENABLE");
+            return v && std::string(v) == "1";
+        }();
+        if (s_exec_events_enabled) {
+            JsonBuilder jb;
+            add_common_fields_(jb);
+            jb.add_timestamp("event_time", now_epoch_ms());
+            jb.add("fuzzer_state", std::string(""));
+            jb.add("dry_run_tested", static_cast<uint64_t>(0));
+            jb.add("dry_run_total", static_cast<uint64_t>(0));
+            jb.add("total_executions", total_executions);
+            jb.add("execs_delta", static_cast<uint64_t>(0));
+            jb.add("total_crashes", static_cast<uint64_t>(0));
+            jb.add("total_hangs", static_cast<uint64_t>(0));
+            jb.add("cpu_usage_pct", 0.0f);
+            jb.add("memory_usage_mb", static_cast<uint64_t>(0));
+            jb.add("num_coverage_lines", static_cast<uint32_t>(0));
+            jb.add("num_coverage_branches", static_cast<uint32_t>(0));
+            jb.add("num_coverage_functions", static_cast<uint32_t>(0));
+            jb.add("coverage_cmp", static_cast<uint64_t>(0));
+            jb.add("coverage_edge_bucket", static_cast<uint64_t>(0));
+            jb.add("corpus_size", static_cast<uint64_t>(0));
+            jb.add("corpus_diversity_score", 0.0f);
+            jb.add("total_mutations_executed", static_cast<uint64_t>(0));
+            jb.add("total_mutations_successful", static_cast<uint64_t>(0));
+            jb.add("mutation_success_rate", rate);
+            jb.add("new_features_discovered", static_cast<uint64_t>(0));
+            jb.add("proto_parse_calls", proto_parse_calls);
+            jb.add("proto_parse_successes", proto_parse_successes);
+            jb.add("custom_mutator_calls", custom_mutator_calls);
+            jb.add("custom_mutator_successes", custom_mutator_successes);
+            jb.add("sched_total", static_cast<uint64_t>(0));
+            jb.add("repeat_pct", 0.0f);
+            jb.add("high_priority_pct", 0.0f);
+            jb.add("low_priority_pct", 0.0f);
+            jb.add("phase2_pct", 0.0f);
+            jb.add("avg_energy", static_cast<uint64_t>(0));
+            jb.add("avg_iters", 0.0f);
+            jb.add("max_iters", static_cast<uint64_t>(0));
+            jb.add("energy_min", static_cast<uint64_t>(0));
+            jb.add("energy_max", static_cast<uint64_t>(0));
+            jb.add("novelty_decay_cnt", static_cast<uint64_t>(0));
+            jb.add("fresh_boost_cnt", static_cast<uint64_t>(0));
+            jb.add("stale_penalty_cnt", static_cast<uint64_t>(0));
+            jb.add("diminishing_cnt", static_cast<uint64_t>(0));
+            jb.add("depth_penalty_cnt", static_cast<uint64_t>(0));
+            jb.add("corpus_count", static_cast<uint64_t>(0));
+            jb.add("global_avg_energy", static_cast<uint64_t>(0));
+            jb.add("exec_avg_us", static_cast<uint64_t>(0));
+            jb.add("exec_max_us", static_cast<uint64_t>(0));
+            jb.add("slow_exec_cnt", static_cast<uint64_t>(0));
+            jb.add("mut_hit_rate_pct", 0.0f);
+            jb.add("plateau_secs", static_cast<uint64_t>(0));
+            jb.add("queue_wraps", static_cast<uint64_t>(0));
+            jb.add("max_depth", static_cast<uint32_t>(0));
+            jb.add("unique_crashes", static_cast<uint64_t>(0));
+            jb.add("timeouts", static_cast<uint64_t>(0));
+            jb.add("fertile_boosts", static_cast<uint64_t>(0));
+            jb.add("saturated_lineages", static_cast<uint64_t>(0));
+            jb.add("explore_selects", static_cast<uint64_t>(0));
+            jb.add("secs_since_crash", static_cast<uint64_t>(0));
+            jb.add("stagnation_secs", static_cast<uint64_t>(0));
+            jb.add("corpus_growth", static_cast<uint64_t>(0));
+            jb.add("inputs_truncated_too_large", static_cast<uint64_t>(0));
+            jb.add("proto_round_cnt", proto_round_cnt);
+            jb.add("proto_scan_ok_cnt", proto_scan_ok_cnt);
+            jb.add("total_round_cnt", total_round_cnt);
+            // Column names use "lpm_" prefix for backward-compatible schema
+            jb.add("lpm_mutate_cnt", kutator_mutate_cnt);
+            jb.add("lpm_crossover_cnt", kutator_crossover_cnt);
+            jb.add("lpm_parse_success_cnt", kutator_parse_success_cnt);
+            jb.add("lpm_parse_fail_cnt", kutator_parse_fail_cnt);
+            jb.add("encode_overflow_cnt", encode_overflow_cnt);
+            jb.add("no_candidates_cnt", no_candidates_cnt);
+            for (uint32_t k = 0; k < kind_num; k++) {
+                jb.add(sanitize_kind_col(kind_names[k]).c_str(), kind_counts[k]);
+            }
+            jb.add("elf_fixup_ok_cnt", elf_fixup_ok_cnt);
+            jb.add("exec_fail_cnt", exec_fail_cnt);
+            jb.add("verify_cnt", verify_cnt);
+            emit_jsonl_("execution_events", jb);
+        }
     }
+
+#ifdef SOLFUZZ_CLICKHOUSE_ENABLED
+    if (!ch_.enabled || !m_tables_initialized.load()) return;
+
+    clickhouse::Block b;
+    append_common_columns_to_block_(&b);
+
+    APPEND_DATETIME64_COLUMN(b, "event_time", now_epoch_ms_(), 3);
+    APPEND_UINT64_COLUMN(b, "total_executions", total_executions);
+    APPEND_UINT64_COLUMN(b, "total_crashes", 0);
+    APPEND_UINT64_COLUMN(b, "total_hangs", 0);
+    APPEND_FLOAT32_COLUMN(b, "cpu_usage_pct", 0.0f);
+    APPEND_UINT64_COLUMN(b, "memory_usage_mb", 0);
+    APPEND_UINT32_COLUMN(b, "num_coverage_lines", 0);
+    APPEND_UINT32_COLUMN(b, "num_coverage_branches", 0);
+    APPEND_UINT32_COLUMN(b, "num_coverage_functions", 0);
+    APPEND_UINT64_COLUMN(b, "coverage_cmp", 0);
+    APPEND_UINT64_COLUMN(b, "coverage_edge_bucket", 0);
+    APPEND_UINT64_COLUMN(b, "corpus_size", 0);
+    APPEND_FLOAT32_COLUMN(b, "corpus_diversity_score", 0.0f);
+    APPEND_UINT64_COLUMN(b, "total_mutations_executed", 0);
+    APPEND_UINT64_COLUMN(b, "total_mutations_successful", 0);
+    APPEND_FLOAT32_COLUMN(b, "mutation_success_rate", rate);
+    APPEND_UINT64_COLUMN(b, "new_features_discovered", 0);
+    APPEND_UINT64_COLUMN(b, "execs_delta", 0);
+
+    // SCHED/DECAY/HEALTH/DIFF-FUZZ columns (not available in this call path)
+    APPEND_UINT64_COLUMN(b, "sched_total", 0);
+    APPEND_FLOAT32_COLUMN(b, "repeat_pct", 0.0f);
+    APPEND_FLOAT32_COLUMN(b, "high_priority_pct", 0.0f);
+    APPEND_FLOAT32_COLUMN(b, "low_priority_pct", 0.0f);
+    APPEND_FLOAT32_COLUMN(b, "phase2_pct", 0.0f);
+    APPEND_UINT64_COLUMN(b, "avg_energy", 0);
+    APPEND_FLOAT32_COLUMN(b, "avg_iters", 0.0f);
+    APPEND_UINT64_COLUMN(b, "max_iters", 0);
+    APPEND_UINT64_COLUMN(b, "energy_min", 0);
+    APPEND_UINT64_COLUMN(b, "energy_max", 0);
+    APPEND_UINT64_COLUMN(b, "novelty_decay_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "fresh_boost_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "stale_penalty_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "diminishing_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "depth_penalty_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "corpus_count", 0);
+    APPEND_UINT64_COLUMN(b, "global_avg_energy", 0);
+    APPEND_UINT64_COLUMN(b, "exec_avg_us", 0);
+    APPEND_UINT64_COLUMN(b, "exec_max_us", 0);
+    APPEND_UINT64_COLUMN(b, "slow_exec_cnt", 0);
+    APPEND_FLOAT32_COLUMN(b, "mut_hit_rate_pct", 0.0f);
+    APPEND_UINT64_COLUMN(b, "plateau_secs", 0);
+    APPEND_UINT64_COLUMN(b, "queue_wraps", 0);
+    APPEND_UINT32_COLUMN(b, "max_depth", 0);
+    APPEND_UINT64_COLUMN(b, "unique_crashes", 0);
+    APPEND_UINT64_COLUMN(b, "timeouts", 0);
+    APPEND_UINT64_COLUMN(b, "fertile_boosts", 0);
+    APPEND_UINT64_COLUMN(b, "saturated_lineages", 0);
+    APPEND_UINT64_COLUMN(b, "explore_selects", 0);
+    APPEND_UINT64_COLUMN(b, "secs_since_crash", 0);
+    APPEND_UINT64_COLUMN(b, "stagnation_secs", 0);
+    APPEND_UINT64_COLUMN(b, "corpus_growth", 0);
+    APPEND_STRING_COLUMN(b, "fuzzer_state", std::string(""));
+    APPEND_UINT64_COLUMN(b, "dry_run_tested", 0);
+    APPEND_UINT64_COLUMN(b, "dry_run_total", 0);
+    APPEND_UINT64_COLUMN(b, "inputs_truncated_too_large", 0);
+
+    // Mutation health columns (from function params)
+    APPEND_UINT64_COLUMN(b, "proto_parse_calls", proto_parse_calls);
+    APPEND_UINT64_COLUMN(b, "proto_parse_successes", proto_parse_successes);
+    APPEND_UINT64_COLUMN(b, "custom_mutator_calls", custom_mutator_calls);
+    APPEND_UINT64_COLUMN(b, "custom_mutator_successes", custom_mutator_successes);
+    APPEND_UINT64_COLUMN(b, "proto_round_cnt", proto_round_cnt);
+    APPEND_UINT64_COLUMN(b, "proto_scan_ok_cnt", proto_scan_ok_cnt);
+    APPEND_UINT64_COLUMN(b, "total_round_cnt", total_round_cnt);
+    APPEND_UINT64_COLUMN(b, "lpm_mutate_cnt", kutator_mutate_cnt);
+    APPEND_UINT64_COLUMN(b, "lpm_crossover_cnt", kutator_crossover_cnt);
+    APPEND_UINT64_COLUMN(b, "lpm_parse_success_cnt", kutator_parse_success_cnt);
+    APPEND_UINT64_COLUMN(b, "lpm_parse_fail_cnt", kutator_parse_fail_cnt);
+    APPEND_UINT64_COLUMN(b, "encode_overflow_cnt", encode_overflow_cnt);
+    APPEND_UINT64_COLUMN(b, "no_candidates_cnt", no_candidates_cnt);
+    for (uint32_t k = 0; k < kind_num; k++) {
+        std::string col = sanitize_kind_col(kind_names[k]);
+        APPEND_UINT64_COLUMN(b, col.c_str(), kind_counts[k]);
+    }
+    APPEND_UINT64_COLUMN(b, "elf_fixup_ok_cnt", elf_fixup_ok_cnt);
+    APPEND_UINT64_COLUMN(b, "exec_fail_cnt", exec_fail_cnt);
+    APPEND_UINT64_COLUMN(b, "verify_cnt", verify_cnt);
+
+    // Capture kind_names for lazy column creation on the logger thread.
+    std::vector<std::string> names_vec;
+    names_vec.reserve(kind_num);
+    for (uint32_t k = 0; k < kind_num; k++) {
+        names_vec.emplace_back(kind_names[k] ? kind_names[k] : "unknown");
+    }
+    auto block = std::make_shared<clickhouse::Block>(std::move(b));
+    enqueue_log_([this, block, names_vec = std::move(names_vec)]() {
+        // Lazily add any new kind columns before inserting
+        std::vector<const char*> ptrs;
+        ptrs.reserve(names_vec.size());
+        for (const auto& s : names_vec) ptrs.push_back(s.c_str());
+        ensure_kind_columns_(ptrs.data(), static_cast<uint32_t>(ptrs.size()));
+
+        insert_with_retry_("execution_events", block.get(), "mutation_health");
+    }, "mutation_health");
+#else
+    (void)total_executions; (void)proto_parse_calls; (void)proto_parse_successes;
+    (void)custom_mutator_calls; (void)custom_mutator_successes; (void)rate;
+    (void)proto_round_cnt; (void)proto_scan_ok_cnt; (void)total_round_cnt;
+    (void)kutator_mutate_cnt; (void)kutator_crossover_cnt; (void)kutator_parse_success_cnt; (void)kutator_parse_fail_cnt;
+    (void)encode_overflow_cnt; (void)no_candidates_cnt;
+    (void)kind_counts; (void)kind_names; (void)kind_num;
+    (void)elf_fixup_ok_cnt; (void)exec_fail_cnt; (void)verify_cnt;
+#endif
 }
 
 void MetricsLogger::log_bug_discovery(

@@ -522,17 +522,22 @@ void subproc_checkTimeLimit(run_t* run) {
     if (!run->global->timing.tmOut) {
         return;
     }
-    /* During dry run we replay known corpus files under heavy load (all CPUs).
-     * Killing them on timeout wastes coverage and pollutes timeout counters.
-     * subproc_checkTermination still handles SIGINT/shutdown. */
-    if (ATOMIC_GET(run->global->feedback.state) == _HF_STATE_DYNAMIC_DRY_RUN) {
-        return;
-    }
-
     int64_t curUSecs  = util_timeNowUSecs();
     int64_t diffUSecs = curUSecs - run->timeStartedUSecs;
 
-    if (run->tmOutSignaled && (diffUSecs > ((run->global->timing.tmOut + 1) * 1000000))) {
+    /* During dry run we replay known corpus files under heavy load (all CPUs).
+     * Use a 10x timeout multiplier: slow corpus entries survive, but true
+     * infinite-loop inputs (e.g. triggered by "TIMEOUT" patterns) still get
+     * killed and reported.  Without this, a single hanging seed blocks dry
+     * run forever. */
+    int64_t tmOutMultiplier = 1;
+    if (ATOMIC_GET(run->global->feedback.state) == _HF_STATE_DYNAMIC_DRY_RUN) {
+        tmOutMultiplier = 10;
+    }
+
+    int64_t effectiveTmOut = run->global->timing.tmOut * tmOutMultiplier;
+
+    if (run->tmOutSignaled && (diffUSecs > ((effectiveTmOut + 1) * 1000000))) {
         /* Has this instance been already signaled due to timeout? Just, SIGKILL it */
         LOG_W("pid=%d has already been signaled due to timeout. Killing it with SIGKILL",
             (int)run->pid);
@@ -541,10 +546,10 @@ void subproc_checkTimeLimit(run_t* run) {
         return;
     }
 
-    if ((diffUSecs > (run->global->timing.tmOut * 1000000)) && !run->tmOutSignaled) {
+    if ((diffUSecs > (effectiveTmOut * 1000000)) && !run->tmOutSignaled) {
         run->tmOutSignaled = true;
         LOG_W("pid=%d took too much time (limit %ld s). Killing it with %s", (int)run->pid,
-            (long)run->global->timing.tmOut,
+            (long)effectiveTmOut,
             run->global->timing.tmoutVTALRM ? "SIGVTALRM" : "SIGKILL");
         if (run->global->timing.tmoutVTALRM) {
             kill(-(run->pid), SIGVTALRM);

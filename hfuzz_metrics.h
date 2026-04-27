@@ -273,6 +273,7 @@ void hfuzz_metrics_log_stats(
  * Called periodically alongside hfuzz_metrics_log_stats() to track whether
  * the protobuf mutation pipeline is functional.
  *
+ * total_executions:         Cumulative execution counter (same source as log_stats)
  * proto_parse_calls:        Total LLVMFuzzerTestOneInput invocations
  * proto_parse_successes:    Calls where LoadProtoInput returned true
  * custom_mutator_calls:     LLVMFuzzerCustomMutator invocations
@@ -280,8 +281,21 @@ void hfuzz_metrics_log_stats(
  * proto_round_cnt:          mangle_mangleContent rounds using proto-aware mutation
  * proto_scan_ok_cnt:        proto_scan_fields calls that found >= 1 field
  * total_round_cnt:          Total mangle_mangleContent calls
+ * kutator_mutate_cnt:       Kutator LLVMFuzzerCustomMutator invocations
+ * kutator_crossover_cnt:    Kutator LLVMFuzzerCustomCrossOver invocations
+ * kutator_parse_success_cnt: Kutator protobuf parse successes
+ * kutator_parse_fail_cnt:   Kutator protobuf parse failures
+ * encode_overflow_cnt:      Mutations that exceeded the output buffer size
+ * no_candidates_cnt:        Mutations where no candidate fields were found
+ * kind_counts:              Per-MutationKind counters (array, kind_num entries)
+ * kind_names:               Per-MutationKind display names (array, kind_num entries, may contain NULL)
+ * kind_num:                 Number of MutationKind variants (length of kind_counts/kind_names)
+ * elf_fixup_ok_cnt:         Successful ELF fixup calls
+ * exec_fail_cnt:            Harness executions that returned failure
+ * verify_cnt:               Crash verification attempts
  */
 void hfuzz_metrics_log_mutation_health(
+    uint64_t total_executions,
     uint64_t proto_parse_calls,
     uint64_t proto_parse_successes,
     uint64_t custom_mutator_calls,
@@ -289,10 +303,15 @@ void hfuzz_metrics_log_mutation_health(
     uint64_t proto_round_cnt,
     uint64_t proto_scan_ok_cnt,
     uint64_t total_round_cnt,
-    uint64_t lpm_mutate_cnt,
-    uint64_t lpm_crossover_cnt,
-    uint64_t lpm_parse_fail_cnt,
-    uint64_t postprocessor_cnt,
+    uint64_t kutator_mutate_cnt,
+    uint64_t kutator_crossover_cnt,
+    uint64_t kutator_parse_success_cnt,
+    uint64_t kutator_parse_fail_cnt,
+    uint64_t encode_overflow_cnt,
+    uint64_t no_candidates_cnt,
+    const uint64_t* kind_counts,
+    const char* const* kind_names,
+    uint32_t kind_num,
     uint64_t elf_fixup_ok_cnt,
     uint64_t exec_fail_cnt,
     uint64_t verify_cnt

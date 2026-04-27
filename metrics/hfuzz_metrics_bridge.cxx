@@ -1955,6 +1955,7 @@ void hfuzz_metrics_bridge_log_stats(
 }
 
 void hfuzz_metrics_bridge_log_mutation_health(
+    uint64_t total_executions,
     uint64_t proto_parse_calls,
     uint64_t proto_parse_successes,
     uint64_t custom_mutator_calls,
@@ -1962,10 +1963,15 @@ void hfuzz_metrics_bridge_log_mutation_health(
     uint64_t proto_round_cnt,
     uint64_t proto_scan_ok_cnt,
     uint64_t total_round_cnt,
-    uint64_t lpm_mutate_cnt,
-    uint64_t lpm_crossover_cnt,
-    uint64_t lpm_parse_fail_cnt,
-    uint64_t postprocessor_cnt,
+    uint64_t kutator_mutate_cnt,
+    uint64_t kutator_crossover_cnt,
+    uint64_t kutator_parse_success_cnt,
+    uint64_t kutator_parse_fail_cnt,
+    uint64_t encode_overflow_cnt,
+    uint64_t no_candidates_cnt,
+    const uint64_t* kind_counts,
+    const char* const* kind_names,
+    uint32_t kind_num,
     uint64_t elf_fixup_ok_cnt,
     uint64_t exec_fail_cnt,
     uint64_t verify_cnt
@@ -1984,22 +1990,33 @@ void hfuzz_metrics_bridge_log_mutation_health(
               << " (" << std::fixed << std::setprecision(1) << proto_parse_pct << "%)"
               << ", custom_mut: " << custom_mutator_successes << "/" << custom_mutator_calls
               << " (" << custom_mut_pct << "%)"
-              << ", lpm_mutate: " << lpm_mutate_cnt
-              << ", lpm_crossover: " << lpm_crossover_cnt
-              << ", lpm_parse_fail: " << lpm_parse_fail_cnt
+              << ", kutator_mutate: " << kutator_mutate_cnt
+              << ", kutator_crossover: " << kutator_crossover_cnt
+              << ", parse_ok: " << kutator_parse_success_cnt
+              << ", parse_fail: " << kutator_parse_fail_cnt
+              << ", enc_overflow: " << encode_overflow_cnt
+              << ", no_candidates: " << no_candidates_cnt
+              << ", kinds[" << kind_num << "]={";
+    for (uint32_t k = 0; k < kind_num; k++) {
+        if (k > 0) std::cerr << ", ";
+        std::cerr << (kind_names[k] ? kind_names[k] : "?") << "=" << kind_counts[k];
+    }
+    std::cerr << "}"
               << ", exec_fail: " << exec_fail_cnt
               << std::endl;
 
     try {
         auto& logger = sol_compat::MetricsLogger::instance();
         logger.log_mutation_health(
+            total_executions,
             proto_parse_calls, proto_parse_successes,
             custom_mutator_calls, custom_mutator_successes,
             proto_parse_pct,
             proto_round_cnt, proto_scan_ok_cnt, total_round_cnt,
-            lpm_mutate_cnt, lpm_crossover_cnt, lpm_parse_fail_cnt,
-            postprocessor_cnt, elf_fixup_ok_cnt,
-            exec_fail_cnt, verify_cnt
+            kutator_mutate_cnt, kutator_crossover_cnt, kutator_parse_success_cnt, kutator_parse_fail_cnt,
+            encode_overflow_cnt, no_candidates_cnt,
+            kind_counts, kind_names, kind_num,
+            elf_fixup_ok_cnt, exec_fail_cnt, verify_cnt
         );
     } catch (const std::exception& e) {
         std::cerr << "[hfuzz_metrics_bridge] Error logging mutation health: "

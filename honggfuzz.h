@@ -246,10 +246,18 @@ typedef struct {
     cntCacheLine_t pidCustomMutatorCallsCnt[_HF_THREAD_MAX];
     cntCacheLine_t pidCustomMutatorSuccessesCnt[_HF_THREAD_MAX];
     cntCacheLine_t pidInputsTruncatedCnt[_HF_THREAD_MAX];
-    cntCacheLine_t pidLpmMutateCnt[_HF_THREAD_MAX];
-    cntCacheLine_t pidLpmCrossOverCnt[_HF_THREAD_MAX];
-    cntCacheLine_t pidLpmParseFailCnt[_HF_THREAD_MAX];
-    cntCacheLine_t pidPostProcessorCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidKutatorMutateCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidKutatorCrossOverCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidKutatorParseSuccessCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidKutatorParseFailCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidKutatorEncodeOverflow[_HF_THREAD_MAX];
+    cntCacheLine_t pidKutatorNoCandidates[_HF_THREAD_MAX];
+#define _HF_KUTATOR_KIND_MAX   32
+#define _HF_KUTATOR_NAME_MAX  32
+    _Atomic uint32_t kutatorKindNum;
+    _Atomic uint8_t  kutatorKindNameReady[_HF_KUTATOR_KIND_MAX];
+    char           kutatorKindNames[_HF_KUTATOR_KIND_MAX][_HF_KUTATOR_NAME_MAX];
+    cntCacheLine_t pidKutatorKind[_HF_KUTATOR_KIND_MAX][_HF_THREAD_MAX];
     cntCacheLine_t pidElfFixupOkCnt[_HF_THREAD_MAX];
     cntCacheLine_t pidExecFailCnt[_HF_THREAD_MAX];
     cntCacheLine_t pidVerifyCnt[_HF_THREAD_MAX];
