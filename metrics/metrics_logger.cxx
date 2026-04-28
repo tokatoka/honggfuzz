@@ -704,6 +704,7 @@ static const std::vector<TableSchema> get_table_schemas() {
                 {"elf_fixup_ok_cnt", "UInt64"},
                 {"exec_fail_cnt", "UInt64"},
                 {"verify_cnt", "UInt64"},
+                {"harness_reject_cnt", "UInt64"},
             },
             "toYYYYMM(event_time)",
             {"event_time", "session_id"}
@@ -1343,6 +1344,7 @@ void MetricsLogger::log_fuzzer_stats(
             jb.add("elf_fixup_ok_cnt", static_cast<uint64_t>(0));
             jb.add("exec_fail_cnt", static_cast<uint64_t>(0));
             jb.add("verify_cnt", static_cast<uint64_t>(0));
+            jb.add("harness_reject_cnt", static_cast<uint64_t>(0));
             emit_jsonl_("execution_events", jb);
         }
     }
@@ -1436,6 +1438,7 @@ void MetricsLogger::log_fuzzer_stats(
     APPEND_UINT64_COLUMN(b, "elf_fixup_ok_cnt", 0);
     APPEND_UINT64_COLUMN(b, "exec_fail_cnt", 0);
     APPEND_UINT64_COLUMN(b, "verify_cnt", 0);
+    APPEND_UINT64_COLUMN(b, "harness_reject_cnt", 0);
 
     enqueue_insert_("execution_events", &b, "fuzzer_stats");
 #else
@@ -1555,7 +1558,8 @@ void MetricsLogger::log_mutation_health(
     uint32_t kind_num,
     uint64_t elf_fixup_ok_cnt,
     uint64_t exec_fail_cnt,
-    uint64_t verify_cnt)
+    uint64_t verify_cnt,
+    uint64_t harness_reject_cnt)
 {
     if (vector_enabled_.load()) {
         static const bool s_exec_events_enabled = [] {
@@ -1639,6 +1643,7 @@ void MetricsLogger::log_mutation_health(
             jb.add("elf_fixup_ok_cnt", elf_fixup_ok_cnt);
             jb.add("exec_fail_cnt", exec_fail_cnt);
             jb.add("verify_cnt", verify_cnt);
+            jb.add("harness_reject_cnt", harness_reject_cnt);
             emit_jsonl_("execution_events", jb);
         }
     }
@@ -1727,6 +1732,7 @@ void MetricsLogger::log_mutation_health(
     APPEND_UINT64_COLUMN(b, "elf_fixup_ok_cnt", elf_fixup_ok_cnt);
     APPEND_UINT64_COLUMN(b, "exec_fail_cnt", exec_fail_cnt);
     APPEND_UINT64_COLUMN(b, "verify_cnt", verify_cnt);
+    APPEND_UINT64_COLUMN(b, "harness_reject_cnt", harness_reject_cnt);
 
     // Capture kind_names for lazy column creation on the logger thread.
     std::vector<std::string> names_vec;
@@ -1751,7 +1757,7 @@ void MetricsLogger::log_mutation_health(
     (void)kutator_mutate_cnt; (void)kutator_crossover_cnt; (void)kutator_parse_success_cnt; (void)kutator_parse_fail_cnt;
     (void)encode_overflow_cnt; (void)no_candidates_cnt;
     (void)kind_counts; (void)kind_names; (void)kind_num;
-    (void)elf_fixup_ok_cnt; (void)exec_fail_cnt; (void)verify_cnt;
+    (void)elf_fixup_ok_cnt; (void)exec_fail_cnt; (void)verify_cnt; (void)harness_reject_cnt;
 #endif
 }
 

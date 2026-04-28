@@ -1459,6 +1459,7 @@ void instrumentReportVerify(void) {
     ATOMIC_POST_INC(globalCovFeedback->pidVerifyCnt[my_thread_no].val);
 }
 
-void instrumentReportElfFixupOk(void) {
-    ATOMIC_POST_INC(globalCovFeedback->pidElfFixupOkCnt[my_thread_no].val);
+void instrumentReportHarnessReject(void) {
+    ATOMIC_POST_INC(globalCovFeedback->pidHarnessRejectCnt[my_thread_no].val);
 }
+

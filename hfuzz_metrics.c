@@ -34,7 +34,8 @@ typedef void (*log_mutation_health_fn)(
     uint64_t, uint64_t, uint64_t, uint64_t,             /* kutator_mutate, kutator_xover, kutator_parse_ok, kutator_parse_fail */
     uint64_t, uint64_t,                                 /* encode_overflow, no_candidates */
     const uint64_t*, const char* const*, uint32_t,      /* kind_counts, kind_names, kind_num */
-    uint64_t, uint64_t, uint64_t                        /* elf_fixup_ok, exec_fail, verify */
+    uint64_t, uint64_t, uint64_t,                       /* _elf_fixup_ok (unused), exec_fail, verify */
+    uint64_t                                            /* harness_reject */
 );
 typedef void (*log_stats_fn)(
     uint64_t, /* total_executions */
@@ -270,9 +271,10 @@ void hfuzz_metrics_log_mutation_health(
     const uint64_t* kind_counts,
     const char* const* kind_names,
     uint32_t kind_num,
-    uint64_t elf_fixup_ok_cnt,
+    uint64_t _elf_fixup_ok_cnt,
     uint64_t exec_fail_cnt,
-    uint64_t verify_cnt
+    uint64_t verify_cnt,
+    uint64_t harness_reject_cnt
 ) {
     if (fn_log_mutation_health) {
         fn_log_mutation_health(total_executions,
@@ -282,7 +284,7 @@ void hfuzz_metrics_log_mutation_health(
                                kutator_mutate_cnt, kutator_crossover_cnt, kutator_parse_success_cnt, kutator_parse_fail_cnt,
                                encode_overflow_cnt, no_candidates_cnt,
                                kind_counts, kind_names, kind_num,
-                               elf_fixup_ok_cnt, exec_fail_cnt, verify_cnt);
+                               _elf_fixup_ok_cnt, exec_fail_cnt, verify_cnt, harness_reject_cnt);
     }
 }
 

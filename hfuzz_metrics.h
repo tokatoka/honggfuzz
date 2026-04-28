@@ -290,9 +290,10 @@ void hfuzz_metrics_log_stats(
  * kind_counts:              Per-MutationKind counters (array, kind_num entries)
  * kind_names:               Per-MutationKind display names (array, kind_num entries, may contain NULL)
  * kind_num:                 Number of MutationKind variants (length of kind_counts/kind_names)
- * elf_fixup_ok_cnt:         Successful ELF fixup calls
+ * _elf_fixup_ok_cnt:        (unused, kept for ABI compat)
  * exec_fail_cnt:            Harness executions that returned failure
  * verify_cnt:               Crash verification attempts
+ * harness_reject_cnt:       Inputs rejected by harness (any executor failed)
  */
 void hfuzz_metrics_log_mutation_health(
     uint64_t total_executions,
@@ -312,9 +313,10 @@ void hfuzz_metrics_log_mutation_health(
     const uint64_t* kind_counts,
     const char* const* kind_names,
     uint32_t kind_num,
-    uint64_t elf_fixup_ok_cnt,
+    uint64_t _elf_fixup_ok_cnt,
     uint64_t exec_fail_cnt,
-    uint64_t verify_cnt
+    uint64_t verify_cnt,
+    uint64_t harness_reject_cnt
 );
 
 #ifdef __cplusplus

@@ -258,9 +258,10 @@ typedef struct {
     _Atomic uint8_t  kutatorKindNameReady[_HF_KUTATOR_KIND_MAX];
     char           kutatorKindNames[_HF_KUTATOR_KIND_MAX][_HF_KUTATOR_NAME_MAX];
     cntCacheLine_t pidKutatorKind[_HF_KUTATOR_KIND_MAX][_HF_THREAD_MAX];
-    cntCacheLine_t pidElfFixupOkCnt[_HF_THREAD_MAX];
+    cntCacheLine_t _pidElfFixupOkCnt[_HF_THREAD_MAX];
     cntCacheLine_t pidExecFailCnt[_HF_THREAD_MAX];
     cntCacheLine_t pidVerifyCnt[_HF_THREAD_MAX];
+    cntCacheLine_t pidHarnessRejectCnt[_HF_THREAD_MAX];
 } feedback_t;
 
 typedef struct {

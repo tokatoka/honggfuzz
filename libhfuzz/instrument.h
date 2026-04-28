@@ -46,6 +46,4 @@ extern void     instrumentReportProtoParseCall(void);
 extern void     instrumentReportProtoParseSuccess(void);
 extern void     instrumentReportExecFail(void);
 extern void     instrumentReportVerify(void);
-extern void     instrumentReportElfFixupOk(void);
-
 #endif /* ifdef _HF_LIBHFUZZ_INSTRUMENT_H_ */

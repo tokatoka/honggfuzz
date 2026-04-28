@@ -130,9 +130,9 @@ __attribute__((weak)) uint64_t solfuzz_kutator_no_candidates(void);
 __attribute__((weak)) uint32_t solfuzz_kutator_kind_num(void);
 __attribute__((weak)) uint64_t solfuzz_kutator_kind_count(uint32_t idx);
 __attribute__((weak)) const char* solfuzz_kutator_kind_name(uint32_t idx);
-__attribute__((weak)) uint64_t solfuzz_elf_fixup_ok_calls(void);
 __attribute__((weak)) uint64_t solfuzz_exec_fail_calls(void);
 __attribute__((weak)) uint64_t solfuzz_verify_calls(void);
+__attribute__((weak)) uint64_t solfuzz_harness_reject_calls(void);
 
 extern const char* const LIBHFUZZ_module_memorycmp;
 extern const char* const LIBHFUZZ_module_instrument;
@@ -207,10 +207,6 @@ static void              HonggfuzzRunOneInput(const uint8_t* buf, size_t len) {
             }
         }
     }
-    if (solfuzz_elf_fixup_ok_calls) {
-        ATOMIC_SET(globalCovFeedback->pidElfFixupOkCnt[my_thread_no].val,
-            solfuzz_elf_fixup_ok_calls());
-    }
     if (solfuzz_exec_fail_calls) {
         ATOMIC_SET(globalCovFeedback->pidExecFailCnt[my_thread_no].val,
             solfuzz_exec_fail_calls());
@@ -218,6 +214,10 @@ static void              HonggfuzzRunOneInput(const uint8_t* buf, size_t len) {
     if (solfuzz_verify_calls) {
         ATOMIC_SET(globalCovFeedback->pidVerifyCnt[my_thread_no].val,
             solfuzz_verify_calls());
+    }
+    if (solfuzz_harness_reject_calls) {
+        ATOMIC_SET(globalCovFeedback->pidHarnessRejectCnt[my_thread_no].val,
+            solfuzz_harness_reject_calls());
     }
 }
 

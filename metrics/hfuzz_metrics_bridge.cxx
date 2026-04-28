@@ -1974,7 +1974,8 @@ void hfuzz_metrics_bridge_log_mutation_health(
     uint32_t kind_num,
     uint64_t elf_fixup_ok_cnt,
     uint64_t exec_fail_cnt,
-    uint64_t verify_cnt
+    uint64_t verify_cnt,
+    uint64_t harness_reject_cnt
 ) {
     if (!s_session_initialized.load()) {
         return;
@@ -2003,6 +2004,7 @@ void hfuzz_metrics_bridge_log_mutation_health(
     }
     std::cerr << "}"
               << ", exec_fail: " << exec_fail_cnt
+              << ", harness_reject: " << harness_reject_cnt
               << std::endl;
 
     try {
@@ -2016,7 +2018,7 @@ void hfuzz_metrics_bridge_log_mutation_health(
             kutator_mutate_cnt, kutator_crossover_cnt, kutator_parse_success_cnt, kutator_parse_fail_cnt,
             encode_overflow_cnt, no_candidates_cnt,
             kind_counts, kind_names, kind_num,
-            elf_fixup_ok_cnt, exec_fail_cnt, verify_cnt
+            elf_fixup_ok_cnt, exec_fail_cnt, verify_cnt, harness_reject_cnt
         );
     } catch (const std::exception& e) {
         std::cerr << "[hfuzz_metrics_bridge] Error logging mutation health: "

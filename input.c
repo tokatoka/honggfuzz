@@ -844,7 +844,7 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                         uint64_t encOverflow = 0, noCandidates = 0;
                         uint32_t kindNum = 0;
                         uint64_t kindCounts[_HF_KUTATOR_KIND_MAX] = {0};
-                        uint64_t elfFixupOk = 0, execFail = 0, verifyCalls = 0;
+                        uint64_t execFail = 0, verifyCalls = 0, harnessReject = 0;
                         if (cov) {
                             kindNum = atomic_load_explicit(&cov->kutatorKindNum, memory_order_acquire);
                             if (kindNum > _HF_KUTATOR_KIND_MAX) kindNum = _HF_KUTATOR_KIND_MAX;
@@ -863,9 +863,9 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                                 for (uint32_t k = 0; k < kindNum; k++) {
                                     kindCounts[k] += ATOMIC_GET(cov->pidKutatorKind[k][t].val);
                                 }
-                                elfFixupOk   += ATOMIC_GET(cov->pidElfFixupOkCnt[t].val);
-                                execFail     += ATOMIC_GET(cov->pidExecFailCnt[t].val);
-                                verifyCalls  += ATOMIC_GET(cov->pidVerifyCnt[t].val);
+                                execFail       += ATOMIC_GET(cov->pidExecFailCnt[t].val);
+                                verifyCalls    += ATOMIC_GET(cov->pidVerifyCnt[t].val);
+                                harnessReject  += ATOMIC_GET(cov->pidHarnessRejectCnt[t].val);
                             }
                         }
                         float parseRate = ppCalls > 0 ? ((float)ppSucc / (float)ppCalls * 100.0f) : 0.0f;
@@ -896,14 +896,14 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                               " kutator_mut=%zu xover=%zu parse_ok=%zu parse_fail=%zu"
                               " enc_overflow=%zu no_candidates=%zu"
                               " %s"
-                              " elf_ok=%zu exec_fail=%zu verify=%zu",
+                              " exec_fail=%zu verify=%zu harness_reject=%zu",
                               (size_t)ppSucc, (size_t)ppCalls, (double)parseRate,
                               (size_t)cmSucc, (size_t)cmCalls,
                               (size_t)protoRounds, (size_t)totalRounds, (size_t)protoScanOk,
                               (size_t)kutMutate, (size_t)kutCrossOver, (size_t)kutParseOk, (size_t)kutParseFail,
                               (size_t)encOverflow, (size_t)noCandidates,
                               kindsBuf,
-                              (size_t)elfFixupOk, (size_t)execFail, (size_t)verifyCalls);
+                              (size_t)execFail, (size_t)verifyCalls, (size_t)harnessReject);
                     }
 
                     /* Defer the metrics bridge call until after the rwlock is released.
@@ -1042,7 +1042,7 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
             uint32_t kindNum2 = atomic_load_explicit(&cov->kutatorKindNum, memory_order_acquire);
             if (kindNum2 > _HF_KUTATOR_KIND_MAX) kindNum2 = _HF_KUTATOR_KIND_MAX;
             uint64_t kindCounts2[_HF_KUTATOR_KIND_MAX] = {0};
-            uint64_t elfOk = 0, execFail = 0, verify = 0;
+            uint64_t execFail = 0, verify = 0, harnessReject = 0;
             for (size_t t = 0; t < run->global->threads.threadsMax; t++) {
                 ppCalls  += ATOMIC_GET(cov->pidProtoParseCallsCnt[t].val);
                 ppSucc   += ATOMIC_GET(cov->pidProtoParseSuccessesCnt[t].val);
@@ -1057,9 +1057,9 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                 for (uint32_t k = 0; k < kindNum2; k++) {
                     kindCounts2[k] += ATOMIC_GET(cov->pidKutatorKind[k][t].val);
                 }
-                elfOk    += ATOMIC_GET(cov->pidElfFixupOkCnt[t].val);
-                execFail += ATOMIC_GET(cov->pidExecFailCnt[t].val);
-                verify   += ATOMIC_GET(cov->pidVerifyCnt[t].val);
+                execFail      += ATOMIC_GET(cov->pidExecFailCnt[t].val);
+                verify        += ATOMIC_GET(cov->pidVerifyCnt[t].val);
+                harnessReject += ATOMIC_GET(cov->pidHarnessRejectCnt[t].val);
             }
             if (ppCalls > 0 || cmCalls > 0) {
                 uint64_t protoRounds = ATOMIC_GET(run->global->mutate.protoRoundCnt);
@@ -1076,7 +1076,7 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                                                   kutMut, kutXover, kutParseOk, kutFail,
                                                   encOvf, noCand,
                                                   kindCounts2, kindNames2, kindNum2,
-                                                  elfOk, execFail, verify);
+                                                  0, execFail, verify, harnessReject);
             }
         }
     }
