@@ -93,16 +93,12 @@ unsigned power_ComputeComplexity(const uint8_t* restrict data, size_t len) {
         sizeScore = 0;
     }
 
-    /* Quick header check for structured data (protobuf/flatbuffer heuristics) */
+    /* Quick header check for structured data (protobuf heuristic) */
     unsigned headerScore = 0;
     /* Common protobuf field tags: 0x08, 0x10, 0x12, 0x18, 0x1A, 0x20, 0x22 */
     uint8_t first = data[0];
     if ((first & 0x07) <= 2 && first >= 0x08 && first <= 0x7F) {
         headerScore = 20;  /* Likely protobuf */
-    }
-    /* Flatbuffer: often starts with size prefix or vtable offset */
-    else if (len >= 8 && data[4] == 0 && data[5] == 0) {
-        headerScore = 15;  /* Possible flatbuffer */
     }
 
     /* Combine scores, cap at 255 */

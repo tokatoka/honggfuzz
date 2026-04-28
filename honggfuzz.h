@@ -361,7 +361,7 @@ typedef struct {
             uint64_t tries;     /* Number of times this tier was used */
             uint64_t successes; /* Number of times it led to new coverage */
         } stats[4];             /* 0=data, 1=arith, 2=splice, 3=other */
-        uint64_t protoRoundCnt;   /* Rounds where format_override was proto/flatbuf */
+        uint64_t protoRoundCnt;   /* Rounds where format_override was proto */
         uint64_t protoScanOkCnt;  /* proto_scan_fields returned >= 1 field */
         uint64_t totalRoundCnt;   /* Total mangle_mangleContent calls */
     } mutate;

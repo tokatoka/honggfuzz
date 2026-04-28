@@ -80,7 +80,7 @@ typedef enum {
     MANGLE_DICT_INSERT,
     MANGLE_PUNCTUATION,
     MANGLE_PROTO_MUTATE,
-    MANGLE_FLATBUF_MUTATE,
+    MANGLE_FLATBUF_MUTATE_UNUSED,
     MANGLE_HAVOC,
     MANGLE_COUNT
 } mangle_t;
@@ -1903,116 +1903,6 @@ static void mangle_ProtoMutate(run_t* run, bool printable) {
     }
 }
 
-/*
- * Flatbuffer-aware byte-level mutation.
- *
- * Preserves root offset, vtable pointer, and vtable structure while
- * mutating data fields within the flatbuffer object.  Falls back to
- * regular byte mutation if the buffer doesn't look like a flatbuffer.
- */
-static void mangle_FlatbufMutate(run_t* run, bool printable) {
-    if (run->dynfile->size < 12) {
-        mangle_Bytes(run, printable);
-        return;
-    }
-
-    uint8_t* data = run->dynfile->data;
-    size_t   len  = run->dynfile->size;
-
-    uint32_t root_off;
-    memcpy(&root_off, data, sizeof(root_off));
-    if (root_off < 4 || root_off >= len - 4) {
-        mangle_Bytes(run, printable);
-        return;
-    }
-
-    int32_t vtable_rel;
-    memcpy(&vtable_rel, &data[root_off], sizeof(vtable_rel));
-    int64_t vtable_off = (int64_t)root_off - (int64_t)vtable_rel;
-    if (vtable_off < 0 || (size_t)vtable_off >= len - 4) {
-        mangle_Bytes(run, printable);
-        return;
-    }
-
-    uint16_t vtable_size, object_size;
-    memcpy(&vtable_size, &data[vtable_off], sizeof(vtable_size));
-    memcpy(&object_size, &data[vtable_off + 2], sizeof(object_size));
-    if (vtable_size < 4 || (size_t)vtable_off + vtable_size > len || root_off + object_size > len) {
-        mangle_Bytes(run, printable);
-        return;
-    }
-
-    size_t num_fields = (vtable_size - 4) / 2;
-    if (num_fields == 0) {
-        mangle_Bytes(run, printable);
-        return;
-    }
-
-    switch (util_rndGet(0, 3)) {
-    case 0:
-    case 1: {
-        /* Mutate a random field's data via its vtable offset */
-        size_t   fi = util_rndGet(0, num_fields - 1);
-        uint16_t fo;
-        memcpy(&fo, &data[(size_t)vtable_off + 4 + fi * 2], sizeof(fo));
-        if (fo == 0) break;
-
-        size_t abs_off = root_off + fo;
-        if (abs_off >= len) break;
-
-        size_t remaining = len - abs_off;
-        size_t ml        = HF_MIN(util_rndGet(1, 8), remaining);
-
-        switch (util_rndGet(0, 3)) {
-        case 0:
-            for (size_t i = 0; i < ml; i++) data[abs_off + i] ^= 1u << util_rndGet(0, 7);
-            break;
-        case 1:
-            if (ml >= 4) {
-                uint32_t v = util_rndGet(0, 1) ? 0 : 0xFFFFFFFF;
-                memcpy(&data[abs_off], &v, 4);
-            } else {
-                data[abs_off] = (uint8_t)util_rndGet(0, 255);
-            }
-            break;
-        case 2: {
-            size_t vl = (remaining >= 8) ? (1U << util_rndGet(0, 3))
-                      : (remaining >= 4) ? (1U << util_rndGet(0, 2))
-                      : (remaining >= 2) ? (1U << util_rndGet(0, 1))
-                                         : 1;
-            mangle_AddSubWithRange(run, abs_off, vl, 256, printable);
-            break;
-        }
-        case 3:
-            util_rndBuf(&data[abs_off], ml);
-            break;
-        }
-        break;
-    }
-
-    case 2: {
-        /* Zero out a vtable field entry (mark field "not present") */
-        size_t fi  = util_rndGet(0, num_fields - 1);
-        size_t eo  = (size_t)vtable_off + 4 + fi * 2;
-        data[eo]     = 0;
-        data[eo + 1] = 0;
-        break;
-    }
-
-    case 3: {
-        /* Mutate data region after vtable, avoiding structural offsets */
-        size_t ds = (size_t)vtable_off + vtable_size;
-        if (ds >= len) ds = root_off + 4;
-        size_t dr = len - ds;
-        if (dr < 2) break;
-
-        size_t off = ds + util_rndGet(0, dr - 1);
-        size_t ml  = HF_MIN(util_rndGet(1, 4), len - off);
-        for (size_t i = 0; i < ml; i++) data[off + i] ^= 1u << util_rndGet(0, 7);
-        break;
-    }
-    }
-}
 #endif /* HF_PROTO_AWARE_MUTATIONS */
 
 static void mangle_CrossOver(run_t* run, bool printable) {
@@ -2164,7 +2054,6 @@ static const mangle_t tierStructure[] = {
     MANGLE_TOKEN_SHUFFLE,
 #if HF_PROTO_AWARE_MUTATIONS
     MANGLE_PROTO_MUTATE,
-    MANGLE_FLATBUF_MUTATE,
 #endif
 };
 
@@ -2294,7 +2183,6 @@ static void (*const mangleFuncs[MANGLE_COUNT])(run_t*, bool) = {
     [MANGLE_PUNCTUATION]         = mangle_Punctuation,
 #if HF_PROTO_AWARE_MUTATIONS
     [MANGLE_PROTO_MUTATE]        = mangle_ProtoMutate,
-    [MANGLE_FLATBUF_MUTATE]      = mangle_FlatbufMutate,
 #endif
     [MANGLE_HAVOC]               = mangle_Havoc,
 };
@@ -2338,13 +2226,12 @@ void mangle_mangleContent(run_t* run) {
      * proto-aware rounds achieve ~100% parse rate while blind rounds provide
      * full mutation variety for exploration.
      *
-     * Probability: ~75% proto-aware round, ~67% flatbuf-aware round.
+     * Probability: ~75% proto-aware round.
      * Remaining rounds get full blind exploration for edge/path discovery
      * via structural mutations.
      *
      * Format heuristic gates the probability check: the first byte must
-     * look like a valid protobuf tag (wire type 0-2, field 1-15) or a
-     * valid flatbuffer root offset.  When the heuristic rejects an
+     * look like a valid protobuf tag (wire type 0-2, field 1-15).  When the heuristic rejects an
      * input, it gets a normal blind round -- no proto overhead.
      *
      * Inside mangle_ProtoMutate, if the full scanner fails on a
@@ -2358,13 +2245,6 @@ void mangle_mangleContent(run_t* run) {
         if (wt <= 2 && first >= 0x08 && first <= 0x7F && util_rnd64() % 4 != 0) {
             format_override = MANGLE_PROTO_MUTATE;
             ATOMIC_POST_INC(run->global->mutate.protoRoundCnt);
-        } else if (run->dynfile->size >= 12) {
-            uint32_t ro;
-            memcpy(&ro, run->dynfile->data, 4);
-            if (ro >= 4 && ro < run->dynfile->size - 4) {
-                format_override = MANGLE_FLATBUF_MUTATE;
-                ATOMIC_POST_INC(run->global->mutate.protoRoundCnt);
-            }
         }
     }
 #endif /* HF_PROTO_AWARE_MUTATIONS */
