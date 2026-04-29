@@ -1017,6 +1017,40 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
                 (size_t)run->statsSnapshot.corpusSize,
                 (size_t)run->statsSnapshot.softCntEdge);
         const __typeof__(run->statsSnapshot)* s = &run->statsSnapshot;
+
+        /* Gather mutation health counters from shared memory (written by the
+           persistent child process in persistent.c) BEFORE the stats call
+           so log_fuzzer_stats writes real values instead of zeros. */
+        hfuzz_mutation_counters_t mc = {0};
+        feedback_t* cov = run->global->feedback.covFeedbackMap;
+        uint32_t kindNum2 = 0;
+        uint64_t kindCounts2[_HF_KUTATOR_KIND_MAX] = {0};
+        if (cov) {
+            kindNum2 = atomic_load_explicit(&cov->kutatorKindNum, memory_order_acquire);
+            if (kindNum2 > _HF_KUTATOR_KIND_MAX) kindNum2 = _HF_KUTATOR_KIND_MAX;
+            for (size_t t = 0; t < run->global->threads.threadsMax; t++) {
+                mc.proto_parse_calls      += ATOMIC_GET(cov->pidProtoParseCallsCnt[t].val);
+                mc.proto_parse_successes  += ATOMIC_GET(cov->pidProtoParseSuccessesCnt[t].val);
+                mc.custom_mutator_calls   += ATOMIC_GET(cov->pidCustomMutatorCallsCnt[t].val);
+                mc.custom_mutator_successes += ATOMIC_GET(cov->pidCustomMutatorSuccessesCnt[t].val);
+                mc.kutator_mutate_cnt         += ATOMIC_GET(cov->pidKutatorMutateCnt[t].val);
+                mc.kutator_crossover_cnt      += ATOMIC_GET(cov->pidKutatorCrossOverCnt[t].val);
+                mc.kutator_parse_success_cnt  += ATOMIC_GET(cov->pidKutatorParseSuccessCnt[t].val);
+                mc.kutator_parse_fail_cnt     += ATOMIC_GET(cov->pidKutatorParseFailCnt[t].val);
+                mc.encode_overflow_cnt    += ATOMIC_GET(cov->pidKutatorEncodeOverflow[t].val);
+                mc.no_candidates_cnt      += ATOMIC_GET(cov->pidKutatorNoCandidates[t].val);
+                for (uint32_t k = 0; k < kindNum2; k++) {
+                    kindCounts2[k] += ATOMIC_GET(cov->pidKutatorKind[k][t].val);
+                }
+                mc.exec_fail_cnt      += ATOMIC_GET(cov->pidExecFailCnt[t].val);
+                mc.verify_cnt         += ATOMIC_GET(cov->pidVerifyCnt[t].val);
+                mc.harness_reject_cnt += ATOMIC_GET(cov->pidHarnessRejectCnt[t].val);
+            }
+            mc.proto_round_cnt  = ATOMIC_GET(run->global->mutate.protoRoundCnt);
+            mc.proto_scan_ok_cnt = ATOMIC_GET(run->global->mutate.protoScanOkCnt);
+            mc.total_round_cnt  = ATOMIC_GET(run->global->mutate.totalRoundCnt);
+        }
+
         hfuzz_metrics_log_stats(
             s->mutationsCnt, s->softCntPc, s->softCntEdge, s->softCntCmp, s->softCntEdgeBucket,
             s->total, s->repeatPct, s->highPct, s->lowPct, s->phase2Pct,
@@ -1029,55 +1063,26 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
             s->fertileBoosts, s->saturatedLineages, s->exploreSelects,
             s->secsSinceCrash, s->stagnationSecs, s->corpusGrowth,
             "dynamic", 0, 0,
-            s->inputsTruncatedTooLarge
+            s->inputsTruncatedTooLarge, &mc
         );
 
-        /* Log mutation health counters from shared memory (written by the
-           persistent child process in persistent.c). */
-        feedback_t* cov = run->global->feedback.covFeedbackMap;
-        if (cov) {
-            uint64_t ppCalls = 0, ppSucc = 0, cmCalls = 0, cmSucc = 0;
-            uint64_t kutMut = 0, kutXover = 0, kutParseOk = 0, kutFail = 0;
-            uint64_t encOvf = 0, noCand = 0;
-            uint32_t kindNum2 = atomic_load_explicit(&cov->kutatorKindNum, memory_order_acquire);
-            if (kindNum2 > _HF_KUTATOR_KIND_MAX) kindNum2 = _HF_KUTATOR_KIND_MAX;
-            uint64_t kindCounts2[_HF_KUTATOR_KIND_MAX] = {0};
-            uint64_t execFail = 0, verify = 0, harnessReject = 0;
-            for (size_t t = 0; t < run->global->threads.threadsMax; t++) {
-                ppCalls  += ATOMIC_GET(cov->pidProtoParseCallsCnt[t].val);
-                ppSucc   += ATOMIC_GET(cov->pidProtoParseSuccessesCnt[t].val);
-                cmCalls  += ATOMIC_GET(cov->pidCustomMutatorCallsCnt[t].val);
-                cmSucc   += ATOMIC_GET(cov->pidCustomMutatorSuccessesCnt[t].val);
-                kutMut   += ATOMIC_GET(cov->pidKutatorMutateCnt[t].val);
-                kutXover += ATOMIC_GET(cov->pidKutatorCrossOverCnt[t].val);
-                kutParseOk += ATOMIC_GET(cov->pidKutatorParseSuccessCnt[t].val);
-                kutFail  += ATOMIC_GET(cov->pidKutatorParseFailCnt[t].val);
-                encOvf   += ATOMIC_GET(cov->pidKutatorEncodeOverflow[t].val);
-                noCand   += ATOMIC_GET(cov->pidKutatorNoCandidates[t].val);
-                for (uint32_t k = 0; k < kindNum2; k++) {
-                    kindCounts2[k] += ATOMIC_GET(cov->pidKutatorKind[k][t].val);
-                }
-                execFail      += ATOMIC_GET(cov->pidExecFailCnt[t].val);
-                verify        += ATOMIC_GET(cov->pidVerifyCnt[t].val);
-                harnessReject += ATOMIC_GET(cov->pidHarnessRejectCnt[t].val);
+        /* Also log the detailed mutation health (includes per-kind breakdown)
+           via the dedicated mutation_health call. */
+        if (cov && (mc.proto_parse_calls > 0 || mc.custom_mutator_calls > 0)) {
+            const char* kindNames2[_HF_KUTATOR_KIND_MAX];
+            for (uint32_t k = 0; k < kindNum2; k++) {
+                kindNames2[k] = atomic_load_explicit(&cov->kutatorKindNameReady[k], memory_order_acquire) == 2
+                    ? cov->kutatorKindNames[k] : "unknown";
             }
-            if (ppCalls > 0 || cmCalls > 0) {
-                uint64_t protoRounds = ATOMIC_GET(run->global->mutate.protoRoundCnt);
-                uint64_t protoScanOk = ATOMIC_GET(run->global->mutate.protoScanOkCnt);
-                uint64_t totalRounds = ATOMIC_GET(run->global->mutate.totalRoundCnt);
-                const char* kindNames2[_HF_KUTATOR_KIND_MAX];
-                for (uint32_t k = 0; k < kindNum2; k++) {
-                    kindNames2[k] = atomic_load_explicit(&cov->kutatorKindNameReady[k], memory_order_acquire) == 2
-                        ? cov->kutatorKindNames[k] : "unknown";
-                }
-                hfuzz_metrics_log_mutation_health(s->mutationsCnt,
-                                                  ppCalls, ppSucc, cmCalls, cmSucc,
-                                                  protoRounds, protoScanOk, totalRounds,
-                                                  kutMut, kutXover, kutParseOk, kutFail,
-                                                  encOvf, noCand,
-                                                  kindCounts2, kindNames2, kindNum2,
-                                                  0, execFail, verify, harnessReject);
-            }
+            hfuzz_metrics_log_mutation_health(s->mutationsCnt,
+                                              mc.proto_parse_calls, mc.proto_parse_successes,
+                                              mc.custom_mutator_calls, mc.custom_mutator_successes,
+                                              mc.proto_round_cnt, mc.proto_scan_ok_cnt, mc.total_round_cnt,
+                                              mc.kutator_mutate_cnt, mc.kutator_crossover_cnt,
+                                              mc.kutator_parse_success_cnt, mc.kutator_parse_fail_cnt,
+                                              mc.encode_overflow_cnt, mc.no_candidates_cnt,
+                                              kindCounts2, kindNames2, kindNum2,
+                                              0, mc.exec_fail_cnt, mc.verify_cnt, mc.harness_reject_cnt);
         }
     }
 

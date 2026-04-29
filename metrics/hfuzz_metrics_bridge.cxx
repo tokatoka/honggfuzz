@@ -1918,7 +1918,8 @@ void hfuzz_metrics_bridge_log_stats(
     const char* fuzzer_state,
     uint64_t dry_run_tested,
     uint64_t dry_run_total,
-    uint64_t inputs_truncated_too_large
+    uint64_t inputs_truncated_too_large,
+    const hfuzz_mutation_counters_t* mutation
 ) {
     if (!s_session_initialized.load()) {
         return;
@@ -1934,7 +1935,10 @@ void hfuzz_metrics_bridge_log_stats(
               << ", mut_hit_rate: " << mut_hit_rate_pct << "%"
               << ", plateau: " << plateau_secs << "s"
               << ", corpus: " << corpus_count
-              << ", crashes: " << unique_crashes << std::endl;
+              << ", crashes: " << unique_crashes
+              << ", lpm_mutate: " << (mutation ? mutation->kutator_mutate_cnt : 0)
+              << ", cm_calls: " << (mutation ? mutation->custom_mutator_calls : 0)
+              << std::endl;
 
     try {
         auto& logger = sol_compat::MetricsLogger::instance();
@@ -1946,7 +1950,7 @@ void hfuzz_metrics_bridge_log_stats(
             exec_avg_us, exec_max_us, slow_execs, mut_hit_rate_pct, plateau_secs, queue_wraps, max_depth,
             unique_crashes, total_crashes, timeouts, fertile_boosts, saturated, explore_selects, secs_since_crash, stagnation_secs, corpus_growth,
             fuzzer_state ? fuzzer_state : "unknown", dry_run_tested, dry_run_total,
-            inputs_truncated_too_large
+            inputs_truncated_too_large, mutation
         );
     } catch (const std::exception& e) {
         std::cerr << "[hfuzz_metrics_bridge] Error logging stats: "

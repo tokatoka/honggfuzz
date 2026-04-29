@@ -504,10 +504,28 @@ static bool fuzz_fetchInput(run_t* run) {
 
             if (execs > 0) {
                 uint64_t truncatedTooLarge = ATOMIC_GET(hfuzz->cnts.inputsTruncatedTooLarge);
+                hfuzz_mutation_counters_t mc = {0};
                 if (hfuzz->feedback.covFeedbackMap) {
+                    feedback_t* cov2 = hfuzz->feedback.covFeedbackMap;
                     for (size_t i = 0; i < hfuzz->threads.threadsMax; i++) {
-                        truncatedTooLarge += ATOMIC_GET(hfuzz->feedback.covFeedbackMap->pidInputsTruncatedCnt[i].val);
+                        truncatedTooLarge += ATOMIC_GET(cov2->pidInputsTruncatedCnt[i].val);
+                        mc.proto_parse_calls      += ATOMIC_GET(cov2->pidProtoParseCallsCnt[i].val);
+                        mc.proto_parse_successes  += ATOMIC_GET(cov2->pidProtoParseSuccessesCnt[i].val);
+                        mc.custom_mutator_calls   += ATOMIC_GET(cov2->pidCustomMutatorCallsCnt[i].val);
+                        mc.custom_mutator_successes += ATOMIC_GET(cov2->pidCustomMutatorSuccessesCnt[i].val);
+                        mc.kutator_mutate_cnt         += ATOMIC_GET(cov2->pidKutatorMutateCnt[i].val);
+                        mc.kutator_crossover_cnt      += ATOMIC_GET(cov2->pidKutatorCrossOverCnt[i].val);
+                        mc.kutator_parse_success_cnt  += ATOMIC_GET(cov2->pidKutatorParseSuccessCnt[i].val);
+                        mc.kutator_parse_fail_cnt     += ATOMIC_GET(cov2->pidKutatorParseFailCnt[i].val);
+                        mc.encode_overflow_cnt    += ATOMIC_GET(cov2->pidKutatorEncodeOverflow[i].val);
+                        mc.no_candidates_cnt      += ATOMIC_GET(cov2->pidKutatorNoCandidates[i].val);
+                        mc.exec_fail_cnt          += ATOMIC_GET(cov2->pidExecFailCnt[i].val);
+                        mc.verify_cnt             += ATOMIC_GET(cov2->pidVerifyCnt[i].val);
+                        mc.harness_reject_cnt     += ATOMIC_GET(cov2->pidHarnessRejectCnt[i].val);
                     }
+                    mc.proto_round_cnt  = ATOMIC_GET(hfuzz->mutate.protoRoundCnt);
+                    mc.proto_scan_ok_cnt = ATOMIC_GET(hfuzz->mutate.protoScanOkCnt);
+                    mc.total_round_cnt  = ATOMIC_GET(hfuzz->mutate.totalRoundCnt);
                 }
                 hfuzz_metrics_log_stats(
                     execs, pcs, edges, 0, 0,
@@ -521,7 +539,7 @@ static bool fuzz_fetchInput(run_t* run) {
                     /* diff-fuzz */
                     uniqueCrashes, crashes, timeouts, 0, 0, 0, 0, 0, 0,
                     state_str, testedFiles, totalFiles,
-                    truncatedTooLarge
+                    truncatedTooLarge, &mc
                 );
             }
         }
@@ -555,7 +573,7 @@ static bool fuzz_fetchInput(run_t* run) {
                 LOG_E("input_prepareDynamicInput(() failed");
                 return false;
             }
-        } else if (!input_prepareDynamicInput(run, true)) {
+        } else if (!input_prepareDynamicInput(run, !(run->global->exe.persistent && run->global->exe.useCustomMutator))) {
             LOG_E("input_prepareDynamicInput() failed");
             return false;
         }
@@ -572,7 +590,7 @@ static bool fuzz_fetchInput(run_t* run) {
                 LOG_E("input_prepareStaticFile() failed");
                 return false;
             }
-        } else if (!input_prepareStaticFile(run, /* rewind= */ true, /* mangle= */ true)) {
+        } else if (!input_prepareStaticFile(run, /* rewind= */ true, /* mangle= */ !(run->global->exe.persistent && run->global->exe.useCustomMutator))) {
             LOG_E("input_prepareStaticFile() failed");
             return false;
         }

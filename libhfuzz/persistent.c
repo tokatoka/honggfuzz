@@ -39,7 +39,7 @@ static uint32_t hf_rand(void) {
 /*
  * Real LLVMFuzzerMutate implementation for honggfuzz.
  *
- * libprotobuf-mutator's Mutator calls this for scalar field mutations
+ * kutator's Mutator calls this for scalar field mutations
  * (int32, int64, float, double, string bytes).  The old no-op stub meant
  * all scalar values were returned unchanged -- now we actually mutate them.
  * Non-weak so it overrides the weak fallback in libfuzzer_mutator.cc.
@@ -113,7 +113,7 @@ void HF_ITER(const uint8_t** buf_ptr, size_t* len_ptr) {
     HonggfuzzFetchData(buf_ptr, len_ptr);
 }
 
-/* Proto parse counter accessors (defined in libprotobuf-mutator libfuzzer_macro.cc,
+/* Proto parse counter accessors (defined in kutator's libfuzzer_macro.cc,
    linked into the same process).  We accumulate deltas into shared memory so the
    honggfuzz parent can read the aggregate across all child processes. */
 __attribute__((weak)) uint64_t solfuzz_proto_parse_calls(void);
@@ -259,17 +259,15 @@ static void HonggfuzzPersistentLoop(void) {
 
         /*
          * Apply structure-aware in-process mutation via LLVMFuzzerCustomMutator
-         * (provided by libprotobuf-mutator / DEFINE_BINARY_PROTO_FUZZER, or a
-         * hand-written custom mutator).
+         * (provided by kutator / define_custom_mutator!(), or a hand-written
+         * custom mutator).
          *
          * Without this, honggfuzz's byte-level external mutation produces
-         * mostly unparseable protobuf data that LoadProtoInput silently drops
+         * mostly unparseable protobuf data that the harness silently drops
          * (LLVMFuzzerTestOneInput returns 0 without ever calling the test).
          *
-         * The custom mutator parses whatever honggfuzz gives us (protobuf is
-         * lenient), does structure-aware mutation, and serializes a valid
-         * message back.  libprotobuf-mutator also caches the parsed result so
-         * the subsequent LoadProtoInput in TestOneInput is a free cache hit.
+         * The custom mutator parses the corpus input as protobuf, does
+         * structure-aware mutation, and serializes a valid message back.
          */
         if (use_custom_mutator && LLVMFuzzerCustomMutator && len > 0) {
             size_t copy_len = len;

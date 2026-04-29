@@ -7,6 +7,7 @@
 #include <atomic>
 #include <tuple>
 #include "jsonl_writer.h"
+#include "../hfuzz_metrics.h"
 
 #ifdef SOLFUZZ_CLICKHOUSE_ENABLED
 #include <thread>
@@ -117,7 +118,9 @@ public:
         uint64_t dry_run_tested = 0,
         uint64_t dry_run_total = 0,
         // INPUT-HEALTH
-        uint64_t inputs_truncated_too_large = 0);
+        uint64_t inputs_truncated_too_large = 0,
+        // MUTATION-HEALTH (from shared memory, nullptr → all zeros)
+        const hfuzz_mutation_counters_t* mutation = nullptr);
 
     // Log mutation health metrics (proto/kutator counters)
     void log_mutation_health(

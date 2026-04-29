@@ -169,6 +169,31 @@ void hfuzz_metrics_register_coverage_feedback(const uint8_t* guard_map,
                                                void* guard_count_ptr);
 
 /*
+ * Mutation-health counters gathered from the persistent child's shared memory.
+ * Passed to hfuzz_metrics_log_stats() so every stats row carries authoritative
+ * kutator values instead of hardcoded zeros.
+ */
+typedef struct {
+    uint64_t proto_parse_calls;
+    uint64_t proto_parse_successes;
+    uint64_t custom_mutator_calls;
+    uint64_t custom_mutator_successes;
+    uint64_t proto_round_cnt;
+    uint64_t proto_scan_ok_cnt;
+    uint64_t total_round_cnt;
+    uint64_t kutator_mutate_cnt;
+    uint64_t kutator_crossover_cnt;
+    uint64_t kutator_parse_success_cnt;
+    uint64_t kutator_parse_fail_cnt;
+    uint64_t encode_overflow_cnt;
+    uint64_t no_candidates_cnt;
+    uint64_t elf_fixup_ok_cnt;
+    uint64_t exec_fail_cnt;
+    uint64_t verify_cnt;
+    uint64_t harness_reject_cnt;
+} hfuzz_mutation_counters_t;
+
+/*
  * Log comprehensive fuzzer statistics.
  * Called periodically from input.c after the SCHED/DECAY/HEALTH/DIFF-FUZZ-STATS LOG_I calls.
  * Contains all the rich metrics about scheduling, energy decay, health, and differential fuzzing.
@@ -265,7 +290,9 @@ void hfuzz_metrics_log_stats(
     uint64_t dry_run_tested,
     uint64_t dry_run_total,
     /* INPUT-HEALTH */
-    uint64_t inputs_truncated_too_large
+    uint64_t inputs_truncated_too_large,
+    /* MUTATION-HEALTH (from shared memory, NULL → all zeros) */
+    const hfuzz_mutation_counters_t* mutation
 );
 
 /*

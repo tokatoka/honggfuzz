@@ -1261,8 +1261,12 @@ void MetricsLogger::log_fuzzer_stats(
     const std::string& fuzzer_state,
     uint64_t dry_run_tested,
     uint64_t dry_run_total,
-    uint64_t inputs_truncated_too_large)
+    uint64_t inputs_truncated_too_large,
+    const hfuzz_mutation_counters_t* mutation)
 {
+    static const hfuzz_mutation_counters_t zeros = {};
+    const auto* m = mutation ? mutation : &zeros;
+
     uint64_t prev = prev_total_executions_.exchange(total_executions);
     uint64_t delta = (total_executions >= prev) ? total_executions - prev : 0;
 
@@ -1332,19 +1336,19 @@ void MetricsLogger::log_fuzzer_stats(
             jb.add("corpus_growth", corpus_growth);
             jb.add("inputs_truncated_too_large", inputs_truncated_too_large);
             jb.add("execs_delta", delta);
-            jb.add("proto_round_cnt", static_cast<uint64_t>(0));
-            jb.add("proto_scan_ok_cnt", static_cast<uint64_t>(0));
-            jb.add("total_round_cnt", static_cast<uint64_t>(0));
-            jb.add("lpm_mutate_cnt", static_cast<uint64_t>(0));
-            jb.add("lpm_crossover_cnt", static_cast<uint64_t>(0));
-            jb.add("lpm_parse_success_cnt", static_cast<uint64_t>(0));
-            jb.add("lpm_parse_fail_cnt", static_cast<uint64_t>(0));
-            jb.add("encode_overflow_cnt", static_cast<uint64_t>(0));
-            jb.add("no_candidates_cnt", static_cast<uint64_t>(0));
-            jb.add("elf_fixup_ok_cnt", static_cast<uint64_t>(0));
-            jb.add("exec_fail_cnt", static_cast<uint64_t>(0));
-            jb.add("verify_cnt", static_cast<uint64_t>(0));
-            jb.add("harness_reject_cnt", static_cast<uint64_t>(0));
+            jb.add("proto_round_cnt", m->proto_round_cnt);
+            jb.add("proto_scan_ok_cnt", m->proto_scan_ok_cnt);
+            jb.add("total_round_cnt", m->total_round_cnt);
+            jb.add("lpm_mutate_cnt", m->kutator_mutate_cnt);
+            jb.add("lpm_crossover_cnt", m->kutator_crossover_cnt);
+            jb.add("lpm_parse_success_cnt", m->kutator_parse_success_cnt);
+            jb.add("lpm_parse_fail_cnt", m->kutator_parse_fail_cnt);
+            jb.add("encode_overflow_cnt", m->encode_overflow_cnt);
+            jb.add("no_candidates_cnt", m->no_candidates_cnt);
+            jb.add("elf_fixup_ok_cnt", m->elf_fixup_ok_cnt);
+            jb.add("exec_fail_cnt", m->exec_fail_cnt);
+            jb.add("verify_cnt", m->verify_cnt);
+            jb.add("harness_reject_cnt", m->harness_reject_cnt);
             emit_jsonl_("execution_events", jb);
         }
     }
@@ -1421,24 +1425,24 @@ void MetricsLogger::log_fuzzer_stats(
     APPEND_UINT64_COLUMN(b, "dry_run_total", dry_run_total);
     APPEND_UINT64_COLUMN(b, "inputs_truncated_too_large", inputs_truncated_too_large);
 
-    // Mutation health columns (not available in this call path, default to 0)
-    APPEND_UINT64_COLUMN(b, "proto_parse_calls", 0);
-    APPEND_UINT64_COLUMN(b, "proto_parse_successes", 0);
-    APPEND_UINT64_COLUMN(b, "custom_mutator_calls", 0);
-    APPEND_UINT64_COLUMN(b, "custom_mutator_successes", 0);
-    APPEND_UINT64_COLUMN(b, "proto_round_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "proto_scan_ok_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "total_round_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "lpm_mutate_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "lpm_crossover_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "lpm_parse_success_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "lpm_parse_fail_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "encode_overflow_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "no_candidates_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "elf_fixup_ok_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "exec_fail_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "verify_cnt", 0);
-    APPEND_UINT64_COLUMN(b, "harness_reject_cnt", 0);
+    // Mutation-health columns from shared memory
+    APPEND_UINT64_COLUMN(b, "proto_parse_calls", m->proto_parse_calls);
+    APPEND_UINT64_COLUMN(b, "proto_parse_successes", m->proto_parse_successes);
+    APPEND_UINT64_COLUMN(b, "custom_mutator_calls", m->custom_mutator_calls);
+    APPEND_UINT64_COLUMN(b, "custom_mutator_successes", m->custom_mutator_successes);
+    APPEND_UINT64_COLUMN(b, "proto_round_cnt", m->proto_round_cnt);
+    APPEND_UINT64_COLUMN(b, "proto_scan_ok_cnt", m->proto_scan_ok_cnt);
+    APPEND_UINT64_COLUMN(b, "total_round_cnt", m->total_round_cnt);
+    APPEND_UINT64_COLUMN(b, "lpm_mutate_cnt", m->kutator_mutate_cnt);
+    APPEND_UINT64_COLUMN(b, "lpm_crossover_cnt", m->kutator_crossover_cnt);
+    APPEND_UINT64_COLUMN(b, "lpm_parse_success_cnt", m->kutator_parse_success_cnt);
+    APPEND_UINT64_COLUMN(b, "lpm_parse_fail_cnt", m->kutator_parse_fail_cnt);
+    APPEND_UINT64_COLUMN(b, "encode_overflow_cnt", m->encode_overflow_cnt);
+    APPEND_UINT64_COLUMN(b, "no_candidates_cnt", m->no_candidates_cnt);
+    APPEND_UINT64_COLUMN(b, "elf_fixup_ok_cnt", m->elf_fixup_ok_cnt);
+    APPEND_UINT64_COLUMN(b, "exec_fail_cnt", m->exec_fail_cnt);
+    APPEND_UINT64_COLUMN(b, "verify_cnt", m->verify_cnt);
+    APPEND_UINT64_COLUMN(b, "harness_reject_cnt", m->harness_reject_cnt);
 
     enqueue_insert_("execution_events", &b, "fuzzer_stats");
 #else
