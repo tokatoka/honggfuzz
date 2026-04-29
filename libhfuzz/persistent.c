@@ -23,10 +23,7 @@
 #include "libhfuzz/libhfuzz.h"
 #include "libhfuzz/performance.h"
 
-__attribute__((weak)) int LLVMFuzzerInitialize(
-    int* argc HF_ATTR_UNUSED, char*** argv HF_ATTR_UNUSED) {
-    return 1;
-}
+__attribute__((weak)) int LLVMFuzzerInitialize(int* argc, char*** argv);
 
 /* Simple xorshift32 PRNG for in-process mutation */
 static uint32_t hf_rng_state = 0;
@@ -393,7 +390,9 @@ static int HonggfuzzRunFromFile(int argc, char** argv) {
 }
 
 int HonggfuzzMain(int argc, char** argv) {
-    LLVMFuzzerInitialize(&argc, &argv);
+    if (LLVMFuzzerInitialize) {
+        LLVMFuzzerInitialize(&argc, &argv);
+    }
     instrumentClearNewCov();
 
     if (!fetchIsInputAvailable()) {
