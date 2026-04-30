@@ -17,9 +17,12 @@ static std::string sanitize_kind_col(const char* raw_name) {
     const char* src = raw_name ? raw_name : "unknown";
     std::string safe;
     for (const char* p = src; *p; p++) {
-        if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
-            (*p >= '0' && *p <= '9') || *p == '_') {
-            safe += *p;
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') {
+            if (!safe.empty() && safe.back() != '_') safe += '_';
+            safe += static_cast<char>(c + ('a' - 'A'));
+        } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+            safe += c;
         }
     }
     if (safe.empty()) safe = "unknown";
