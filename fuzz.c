@@ -340,6 +340,17 @@ static void fuzz_perfFeedback(run_t* run) {
         }
         ATOMIC_POST_INC(run->global->cnts.mutationsWithNewCov);
 
+        /* In persistent mode with custom mutator, the child may produce output
+           of a different size than the original corpus entry.  Use the actual
+           post-mutation size so we don't save stale trailing bytes. */
+        if (run->global->feedback.covFeedbackMap) {
+            size_t post_len = ATOMIC_GET(
+                run->global->feedback.covFeedbackMap->postMutInputLen[run->fuzzNo].val);
+            if (post_len > 0 && post_len <= (size_t)run->global->mutate.maxInputSz) {
+                input_setSize(run, post_len);
+            }
+        }
+
         /* Push useful imported input to dynamic queue again for the further mutations */
         if (run->dynfile->imported) {
             LOG_I("File imported: %s", run->dynfile->path);
@@ -438,7 +449,15 @@ static bool fuzz_runVerifier(run_t* run) {
     defer {
         close(fd);
     };
-    if (!files_writeToFd(fd, run->dynfile->data, run->dynfile->size)) {
+    size_t ver_size = run->dynfile->size;
+    if (run->global->feedback.covFeedbackMap) {
+        size_t post_len = ATOMIC_GET(
+            run->global->feedback.covFeedbackMap->postMutInputLen[run->fuzzNo].val);
+        if (post_len > 0 && post_len <= (size_t)run->global->mutate.maxInputSz) {
+            ver_size = post_len;
+        }
+    }
+    if (!files_writeToFd(fd, run->dynfile->data, ver_size)) {
         LOG_E("Couldn't save verified file as '%s'", verFile);
         unlink(verFile);
         return true;
@@ -608,6 +627,12 @@ static bool fuzz_fetchInput(run_t* run) {
         return false;
     }
 
+    /* Donor must be written before subproc_Run sends the size indicator */
+    if (run->global->exe.persistent && run->global->exe.useCustomMutator
+        && run->global->exe.useCrossover) {
+        input_prepareDonorInput(run);
+    }
+
     return true;
 }
 
@@ -622,6 +647,7 @@ static void fuzz_fuzzLoop(run_t* run) {
     run->mainWorker       = true;
     run->mutationsPerRun  = run->global->mutate.mutationsPerRun;
     run->tmOutSignaled    = false;
+    run->donorSize        = 0;
 
     run->hwCnts.cpuInstrCnt  = 0;
     run->hwCnts.cpuBranchCnt = 0;
@@ -753,10 +779,13 @@ static void* fuzz_threadNew(void* arg) {
     char mapname[32];
     snprintf(mapname, sizeof(mapname), "hf-%u-input", fuzzNo);
     if (!hfuzz->socketFuzzer.enabled) {
-        if (!(run.dynfile->data = files_mapSharedMem(hfuzz->mutate.maxInputSz, &(run.dynfile->fd),
+        size_t mmapSz = hfuzz->mutate.maxInputSz;
+        if (hfuzz->exe.persistent && hfuzz->exe.useCustomMutator && hfuzz->exe.useCrossover) {
+            mmapSz *= 2;
+        }
+        if (!(run.dynfile->data = files_mapSharedMem(mmapSz, &(run.dynfile->fd),
                   mapname, /* nocore= */ true, /* exportmap= */ false))) {
-            LOG_F("Couldn't create an input file of size: %zu, name:'%s'", hfuzz->mutate.maxInputSz,
-                mapname);
+            LOG_F("Couldn't create an input file of size: %zu, name:'%s'", mmapSz, mapname);
         }
     }
     defer {

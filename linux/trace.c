@@ -932,9 +932,21 @@ static void arch_traceSaveData(run_t* run, pid_t pid) {
         }
     }
 
+    /* If in-process custom mutation wrote post-mutation data back to the shared
+       input region, use the post-mutation length so the saved crash file contains
+       the actual input that triggered the crash (not the pre-mutation corpus entry). */
+    size_t crash_size = run->dynfile->size;
+    if (run->global->feedback.covFeedbackMap) {
+        size_t post_len = ATOMIC_GET(
+            run->global->feedback.covFeedbackMap->postMutInputLen[run->fuzzNo].val);
+        if (post_len > 0 && post_len <= (size_t)run->global->mutate.maxInputSz) {
+            crash_size = post_len;
+        }
+    }
+
     /* Use atomic write to ensure file appears fully formed for external observers */
     if (!files_writeBufToFileAtomic(
-            run->crashFileName, run->dynfile->data, run->dynfile->size)) {
+            run->crashFileName, run->dynfile->data, crash_size)) {
         LOG_E("Couldn't write to '%s'", run->crashFileName);
         return;
     }

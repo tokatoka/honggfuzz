@@ -5,6 +5,9 @@ on:
     branches: [master-patches]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,3 +28,30 @@ jobs:
         run: |
           make clean
           make -j$(nproc) SOLFUZZ_METRICS_ENABLED=1
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ make pkg-config libunwind-dev binutils-dev
+
+      - name: Build honggfuzz
+        run: make -j$(nproc)
+
+      - name: Build post-mutation writeback test
+        run: cc -std=c11 -o tests/test_postmut_writeback tests/test_postmut_writeback.c
+
+      - name: Run post-mutation writeback test
+        run: ./tests/test_postmut_writeback
+
+      - name: Build crossover invariants test
+        run: cc -std=c11 -o tests/test_crossover_invariants tests/test_crossover_invariants.c
+
+      - name: Run crossover invariants test
+        run: ./tests/test_crossover_invariants

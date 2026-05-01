@@ -30,5 +30,10 @@
 
 extern void HonggfuzzFetchData(const uint8_t** buf_ptr, size_t* len_ptr);
 extern bool fetchIsInputAvailable(void);
+extern uint8_t* getInputBuf(void);
+extern size_t getInputMaxSize(void);
+extern uint8_t* getDonorBuf(void);
+extern size_t getDonorLen(void);
+extern void fetchSanPoison(const uint8_t* buf, size_t len);
 
 #endif /* ifdef _HF_LIBHFUZZ_FETCH_H_ */

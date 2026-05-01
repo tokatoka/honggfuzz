@@ -128,9 +128,12 @@ const char* subproc_StatusToStr(int status) {
 }
 
 static bool subproc_persistentSendFileIndicator(run_t* run) {
-    uint64_t len = (uint64_t)run->dynfile->size;
-    if (!files_sendToSocketNB(run->persistentSock, (uint8_t*)&len, sizeof(len))) {
-        PLOG_W("files_sendToSocketNB(len=%zu)", sizeof(len));
+    uint64_t lens[2] = {
+        (uint64_t)run->dynfile->size,
+        (uint64_t)run->donorSize,
+    };
+    if (!files_sendToSocketNB(run->persistentSock, (uint8_t*)lens, sizeof(lens))) {
+        PLOG_W("files_sendToSocketNB(lens=%zu)", sizeof(lens));
         return false;
     }
     return true;
@@ -280,6 +283,17 @@ static bool subproc_PrepareExecv(run_t* run) {
         setenv("HFUZZ_USE_CUSTOM_MUTATOR", "1", 1);
     } else {
         setenv("HFUZZ_USE_CUSTOM_MUTATOR", "0", 1);
+    }
+    if (run->global->exe.useCrossover) {
+        setenv("HFUZZ_USE_CROSSOVER", "1", 1);
+    } else {
+        setenv("HFUZZ_USE_CROSSOVER", "0", 1);
+    }
+    if (run->global->exe.persistent && run->global->exe.useCustomMutator
+        && run->global->exe.useCrossover) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%zu", run->global->mutate.maxInputSz);
+        setenv("HFUZZ_MAX_INPUT_SZ", buf, 1);
     }
     if (run->global->exe.netDriver) {
         setenv(_HF_THREAD_NETDRIVER_ENV, "1", 1);
@@ -564,21 +578,27 @@ void subproc_checkTimeLimit(run_t* run) {
         hfuzz_metrics_log_hang(run->dynfile->size,
                                 (uint64_t)(run->global->timing.tmOut * 1000));
 
-        /* Save the timeout input as a bug artifact */
+        /* Save the timeout input as a bug artifact. Use post-mutation length
+           if custom mutation wrote back to shared memory. */
         if (run->dynfile && run->dynfile->data && run->dynfile->size > 0) {
+            size_t save_size = run->dynfile->size;
+            if (run->global->feedback.covFeedbackMap) {
+                size_t post_len = ATOMIC_GET(
+                    run->global->feedback.covFeedbackMap->postMutInputLen[run->fuzzNo].val);
+                if (post_len > 0 && post_len <= (size_t)run->global->mutate.maxInputSz) {
+                    save_size = post_len;
+                }
+            }
             char timeoutFileName[PATH_MAX];
-            uint64_t inputHash = util_hash((const char*)run->dynfile->data, run->dynfile->size);
+            uint64_t inputHash = util_hash((const char*)run->dynfile->data, save_size);
 
-            /* Use unique filename: TIMEOUT.SIZE.HASH.fuzz */
             snprintf(timeoutFileName, sizeof(timeoutFileName),
                 "%s/TIMEOUT.%zu.%" PRIx64 ".%s",
-                run->global->io.crashDir, run->dynfile->size, inputHash,
+                run->global->io.crashDir, save_size, inputHash,
                 run->global->io.fileExtn);
 
-            /* Only save if file doesn't already exist (deduplication by hash) */
             if (!files_exists(timeoutFileName)) {
-                /* Use atomic write to ensure file appears fully formed */
-                if (files_writeBufToFileAtomic(timeoutFileName, run->dynfile->data, run->dynfile->size)) {
+                if (files_writeBufToFileAtomic(timeoutFileName, run->dynfile->data, save_size)) {
                     LOG_I("Timeout: saved as '%s'", timeoutFileName);
                 } else {
                     LOG_W("Couldn't save timeout input to '%s'", timeoutFileName);
@@ -784,14 +804,22 @@ void subproc_checkRssLimit(run_t* run) {
          * Save it as an artifact for reproducibility.
          * Layers 1-2 = infrastructure pressure -- don't save. */
         if (is_hard_cap && run->dynfile && run->dynfile->data && run->dynfile->size > 0) {
+            size_t save_size = run->dynfile->size;
+            if (run->global->feedback.covFeedbackMap) {
+                size_t post_len = ATOMIC_GET(
+                    run->global->feedback.covFeedbackMap->postMutInputLen[run->fuzzNo].val);
+                if (post_len > 0 && post_len <= (size_t)run->global->mutate.maxInputSz) {
+                    save_size = post_len;
+                }
+            }
             char oomFileName[PATH_MAX];
-            uint64_t inputHash = util_hash((const char*)run->dynfile->data, run->dynfile->size);
+            uint64_t inputHash = util_hash((const char*)run->dynfile->data, save_size);
             snprintf(oomFileName, sizeof(oomFileName),
                 "%s/OOM.%zu.%" PRIx64 ".%s",
-                run->global->io.crashDir, run->dynfile->size, inputHash,
+                run->global->io.crashDir, save_size, inputHash,
                 run->global->io.fileExtn);
             if (!files_exists(oomFileName)) {
-                if (files_writeBufToFileAtomic(oomFileName, run->dynfile->data, run->dynfile->size)) {
+                if (files_writeBufToFileAtomic(oomFileName, run->dynfile->data, save_size)) {
                     LOG_I("OOM: saved triggering input as '%s'", oomFileName);
                 } else {
                     LOG_W("Couldn't save OOM input to '%s'", oomFileName);

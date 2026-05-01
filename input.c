@@ -1282,6 +1282,32 @@ const uint8_t* input_getRandomInputAsBuf(run_t* run, size_t* len) {
     return current->data;
 }
 
+void input_prepareDonorInput(run_t* run) {
+    uint64_t cnt = ATOMIC_GET(run->global->io.dynfileqCnt);
+    if (cnt == 0) {
+        run->donorSize = 0;
+        return;
+    }
+
+    size_t maxInputSz = run->global->mutate.maxInputSz;
+    uint8_t* donorDst = run->dynfile->data + maxInputSz;
+
+    MX_SCOPED_RWLOCK_READ(&run->global->mutex.dynfileq);
+    uint64_t  idx  = util_rndGet(0, cnt - 1);
+    dynfile_t* cur = TAILQ_FIRST(&run->global->io.dynfileq);
+    for (uint64_t i = 0; i < idx && cur != NULL; i++) {
+        cur = TAILQ_NEXT(cur, pointers);
+    }
+    if (cur == NULL) {
+        run->donorSize = 0;
+        return;
+    }
+
+    size_t sz = cur->size < maxInputSz ? cur->size : maxInputSz;
+    memcpy(donorDst, cur->data, sz);
+    run->donorSize = sz;
+}
+
 /*
  * Select an input diverse from the current one for crossover.
  * Diversity = different lineage + different coverage profile.

@@ -262,6 +262,10 @@ typedef struct {
     cntCacheLine_t pidExecFailCnt[_HF_THREAD_MAX];
     cntCacheLine_t pidVerifyCnt[_HF_THREAD_MAX];
     cntCacheLine_t pidHarnessRejectCnt[_HF_THREAD_MAX];
+    /* Post-custom-mutation input length. Written by the persistent child after
+       in-process mutation (persistent.c) so the parent can save the actual
+       crash-triggering input rather than the pre-mutation corpus entry. */
+    sizeCacheLine_t postMutInputLen[_HF_THREAD_MAX];
 } feedback_t;
 
 typedef struct {
@@ -327,6 +331,7 @@ typedef struct {
         bool               netDriver;
         bool               persistent;
         bool               useCustomMutator;
+        bool               useCrossover;
         uint64_t           asLimit;
         uint64_t           rssLimit;
         uint64_t           dataLimit;
@@ -521,6 +526,7 @@ typedef struct {
     dynfile_t*   current;
     hwcnt_t      hwCnts;
     uint8_t      mutationTiers; /* Bitmap of mutation tiers used this run */
+    size_t       donorSize;     /* Size of crossover donor written to second half of mmap */
 
     /* Deferred metrics snapshot: filled under dynfileq rwlock,
        flushed after release to avoid blocking all fuzzer threads on

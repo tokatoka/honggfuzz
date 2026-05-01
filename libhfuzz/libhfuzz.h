@@ -41,6 +41,9 @@ size_t LLVMFuzzerMutate(uint8_t* Data, size_t Size, size_t MaxSize);
 void HF_ITER(const uint8_t** buf_ptr, size_t* len_ptr);
 void HonggfuzzFetchData(const uint8_t** buf_ptr, size_t* len_ptr);
 
+/* True when running from file (replay/validation), false under honggfuzz. */
+extern bool hf_replay_mode;
+
 #if defined(__linux__)
 
 #include <sched.h>
