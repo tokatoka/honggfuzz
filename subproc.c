@@ -46,6 +46,7 @@
 #include "libhfcommon/log.h"
 #include "libhfcommon/util.h"
 #include "hfuzz_metrics.h"
+#include "report.h"
 
 extern char** environ;
 
@@ -562,9 +563,137 @@ void subproc_checkTimeLimit(run_t* run) {
 
     if ((diffUSecs > (effectiveTmOut * 1000000)) && !run->tmOutSignaled) {
         run->tmOutSignaled = true;
-        LOG_W("pid=%d took too much time (limit %ld s). Killing it with %s", (int)run->pid,
-            (long)effectiveTmOut,
-            run->global->timing.tmoutVTALRM ? "SIGVTALRM" : "SIGKILL");
+
+        const char* signalName = run->global->timing.tmoutVTALRM ? "SIGVTALRM" : "SIGKILL";
+        const char* phaseStr   = "UNKNOWN";
+        switch (ATOMIC_GET(run->global->feedback.state)) {
+            case _HF_STATE_DYNAMIC_DRY_RUN: phaseStr = "DRY_RUN"; break;
+            case _HF_STATE_DYNAMIC_MAIN:    phaseStr = "MAIN"; break;
+            case _HF_STATE_STATIC:          phaseStr = "STATIC"; break;
+            case _HF_STATE_DYNAMIC_MINIMIZE: phaseStr = "MINIMIZE"; break;
+            case _HF_STATE_REPLAY:          phaseStr = "REPLAY"; break;
+            default: break;
+        }
+
+        int64_t elapsedSecs = diffUSecs / 1000000;
+        int64_t elapsedMs   = (diffUSecs % 1000000) / 1000;
+
+        /* Resolve post-mutation input size (what the target actually saw) */
+        size_t inputSize = run->dynfile ? run->dynfile->size : 0;
+        if (run->dynfile && run->global->feedback.covFeedbackMap) {
+            size_t post_len = ATOMIC_GET(
+                run->global->feedback.covFeedbackMap->postMutInputLen[run->fuzzNo].val);
+            if (post_len > 0 && post_len <= (size_t)run->global->mutate.maxInputSz) {
+                inputSize = post_len;
+            }
+        }
+
+        LOG_W("Timeout: pid=%d elapsed=%" PRId64 ".%03" PRId64 "s limit=%" PRId64 "s "
+              "(base=%lds x%" PRId64 ") signal=%s phase=%s input='%s' size=%zu depth=%u "
+              "mutations=%u",
+            (int)run->pid, elapsedSecs, elapsedMs, effectiveTmOut,
+            (long)run->global->timing.tmOut, tmOutMultiplier, signalName, phaseStr,
+            run->dynfile ? run->dynfile->path : "N/A",
+            inputSize,
+            run->dynfile ? run->dynfile->depth : 0,
+            run->mutationsPerRun);
+
+        /* Capture /proc state before killing — best-effort, all reads are
+           no-ops if the proc files are unreadable (permissions, race, etc.) */
+        char     procStack[4096] = {0};
+        char     procWchan[128]  = {0};
+        long     ctxVoluntary    = -1;
+        long     ctxInvoluntary  = -1;
+        long     cpuUtimeTicks   = -1;
+        long     cpuStimeTicks   = -1;
+        long     vmRSSKb         = -1;
+        double   loadAvg[3]      = {-1.0, -1.0, -1.0};
+        int64_t  ioReadBytes     = -1;
+        int64_t  ioWriteBytes    = -1;
+        uint64_t schedRunNs      = 0;
+        uint64_t schedWaitNs     = 0;
+        bool     schedAvail      = false;
+        {
+            char path[128];
+
+            snprintf(path, sizeof(path), "/proc/%d/stack", (int)run->pid);
+            int fd = open(path, O_RDONLY | O_CLOEXEC);
+            if (fd >= 0) {
+                ssize_t n = TEMP_FAILURE_RETRY(read(fd, procStack, sizeof(procStack) - 1));
+                if (n > 0) procStack[n] = '\0';
+                close(fd);
+            }
+
+            snprintf(path, sizeof(path), "/proc/%d/wchan", (int)run->pid);
+            fd = open(path, O_RDONLY | O_CLOEXEC);
+            if (fd >= 0) {
+                ssize_t n = TEMP_FAILURE_RETRY(read(fd, procWchan, sizeof(procWchan) - 1));
+                if (n > 0) {
+                    procWchan[n] = '\0';
+                    char* nl = strchr(procWchan, '\n');
+                    if (nl) *nl = '\0';
+                }
+                close(fd);
+            }
+
+            snprintf(path, sizeof(path), "/proc/%d/status", (int)run->pid);
+            FILE* f = fopen(path, "r");
+            if (f) {
+                char line[256];
+                while (fgets(line, sizeof(line), f)) {
+                    if (sscanf(line, "voluntary_ctxt_switches: %ld", &ctxVoluntary) == 1) continue;
+                    if (sscanf(line, "nonvoluntary_ctxt_switches: %ld", &ctxInvoluntary) == 1) continue;
+                    sscanf(line, "VmRSS: %ld kB", &vmRSSKb);
+                }
+                fclose(f);
+            }
+
+            /* CPU time: fields 14 (utime) and 15 (stime) in /proc/<pid>/stat */
+            snprintf(path, sizeof(path), "/proc/%d/stat", (int)run->pid);
+            f = fopen(path, "r");
+            if (f) {
+                char statbuf[1024];
+                if (fgets(statbuf, sizeof(statbuf), f)) {
+                    char* p = strrchr(statbuf, ')');
+                    if (p) {
+                        long dummy;
+                        sscanf(p + 2,
+                            "%*c %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld",
+                            &dummy, &dummy, &dummy, &dummy, &dummy,
+                            &dummy, &dummy, &dummy, &dummy, &dummy,
+                            &cpuUtimeTicks, &cpuStimeTicks);
+                    }
+                }
+                fclose(f);
+            }
+
+            /* I/O counters */
+            snprintf(path, sizeof(path), "/proc/%d/io", (int)run->pid);
+            f = fopen(path, "r");
+            if (f) {
+                char line[256];
+                while (fgets(line, sizeof(line), f)) {
+                    if (sscanf(line, "read_bytes: %" PRId64, &ioReadBytes) == 1) continue;
+                    sscanf(line, "write_bytes: %" PRId64, &ioWriteBytes);
+                }
+                fclose(f);
+            }
+
+            /* Scheduler stats: run_time_ns wait_time_ns timeslices */
+            snprintf(path, sizeof(path), "/proc/%d/schedstat", (int)run->pid);
+            f = fopen(path, "r");
+            if (f) {
+                uint64_t ts;
+                if (fscanf(f, "%" PRIu64 " %" PRIu64 " %" PRIu64,
+                        &schedRunNs, &schedWaitNs, &ts) == 3) {
+                    schedAvail = true;
+                }
+                fclose(f);
+            }
+
+            getloadavg(loadAvg, 3);
+        }
+
         if (run->global->timing.tmoutVTALRM) {
             kill(-(run->pid), SIGVTALRM);
             kill(run->pid, SIGVTALRM);
@@ -575,30 +704,21 @@ void subproc_checkTimeLimit(run_t* run) {
         ATOMIC_POST_INC(run->global->cnts.timeoutedCnt);
 
         /* Log hang metrics (optional - weak symbol, no-op if not overridden) */
-        hfuzz_metrics_log_hang(run->dynfile->size,
-                                (uint64_t)(run->global->timing.tmOut * 1000));
+        hfuzz_metrics_log_hang(inputSize, (uint64_t)(run->global->timing.tmOut * 1000));
 
-        /* Save the timeout input as a bug artifact. Use post-mutation length
-           if custom mutation wrote back to shared memory. */
-        if (run->dynfile && run->dynfile->data && run->dynfile->size > 0) {
-            size_t save_size = run->dynfile->size;
-            if (run->global->feedback.covFeedbackMap) {
-                size_t post_len = ATOMIC_GET(
-                    run->global->feedback.covFeedbackMap->postMutInputLen[run->fuzzNo].val);
-                if (post_len > 0 && post_len <= (size_t)run->global->mutate.maxInputSz) {
-                    save_size = post_len;
-                }
-            }
-            char timeoutFileName[PATH_MAX];
-            uint64_t inputHash = util_hash((const char*)run->dynfile->data, save_size);
+        char timeoutFileName[PATH_MAX] = {0};
+        if (run->dynfile && run->dynfile->data && inputSize > 0) {
+            uint64_t inputHash = util_hash(
+                (const char*)run->dynfile->data, inputSize);
 
             snprintf(timeoutFileName, sizeof(timeoutFileName),
                 "%s/TIMEOUT.%zu.%" PRIx64 ".%s",
-                run->global->io.crashDir, save_size, inputHash,
+                run->global->io.crashDir, inputSize, inputHash,
                 run->global->io.fileExtn);
 
             if (!files_exists(timeoutFileName)) {
-                if (files_writeBufToFileAtomic(timeoutFileName, run->dynfile->data, save_size)) {
+                if (files_writeBufToFileAtomic(
+                        timeoutFileName, run->dynfile->data, inputSize)) {
                     LOG_I("Timeout: saved as '%s'", timeoutFileName);
                 } else {
                     LOG_W("Couldn't save timeout input to '%s'", timeoutFileName);
@@ -607,6 +727,13 @@ void subproc_checkTimeLimit(run_t* run) {
                 LOG_D("Timeout (dup): '%s' already exists, skipping", timeoutFileName);
             }
         }
+
+        report_appendTimeoutReport(run, diffUSecs, effectiveTmOut, tmOutMultiplier,
+            signalName, phaseStr, timeoutFileName, inputSize, procStack, procWchan,
+            ctxVoluntary, ctxInvoluntary, cpuUtimeTicks, cpuStimeTicks,
+            vmRSSKb, loadAvg, ioReadBytes, ioWriteBytes,
+            schedAvail ? (int64_t)schedRunNs : -1,
+            schedAvail ? (int64_t)schedWaitNs : -1);
     }
 }
 

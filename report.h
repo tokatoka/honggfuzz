@@ -33,5 +33,11 @@
 extern void report_saveReport(run_t* run);
 extern void report_appendReport(pid_t pid, run_t* run, funcs_t* funcs, size_t funcCnt, uint64_t pc,
     uint64_t crashAddr, int signo, const char* instr, const char description[HF_STR_LEN]);
+extern void report_appendTimeoutReport(run_t* run, int64_t elapsedUSecs,
+    int64_t effectiveTmOutSecs, int64_t tmOutMultiplier, const char* signalUsed,
+    const char* phaseStr, const char* timeoutFileName, size_t inputSize,
+    const char* procStack, const char* procWchan, long ctxVoluntary, long ctxInvoluntary,
+    long cpuUtimeTicks, long cpuStimeTicks, long vmRSSKb, const double loadAvg[3],
+    int64_t ioReadBytes, int64_t ioWriteBytes, int64_t schedRunNs, int64_t schedWaitNs);
 
 #endif

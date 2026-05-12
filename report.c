@@ -160,5 +160,93 @@ void report_appendReport(pid_t pid, run_t* run, funcs_t* funcs, size_t funcCnt, 
     }
 #endif
 
+    util_ssnprintf(run->report, sizeof(run->report),
+        "INPUT_SIZE: %zu\n", run->dynfile ? run->dynfile->size : 0);
+    util_ssnprintf(run->report, sizeof(run->report),
+        "MUTATIONS_PER_RUN: %u\n", run->mutationsPerRun);
+    util_ssnprintf(run->report, sizeof(run->report),
+        "MUTATION_DEPTH: %u\n", run->dynfile ? run->dynfile->depth : 0);
+    util_ssnprintf(run->report, sizeof(run->report),
+        "SELECT_COUNT: %u\n", run->dynfile ? run->dynfile->selectCnt : 0);
+
     return;
+}
+
+void report_appendTimeoutReport(run_t* run, int64_t elapsedUSecs, int64_t effectiveTmOutSecs,
+    int64_t tmOutMultiplier, const char* signalUsed, const char* phaseStr,
+    const char* timeoutFileName, size_t inputSize, const char* procStack,
+    const char* procWchan, long ctxVoluntary, long ctxInvoluntary,
+    long cpuUtimeTicks, long cpuStimeTicks, long vmRSSKb, const double loadAvg[3],
+    int64_t ioReadBytes, int64_t ioWriteBytes, int64_t schedRunNs, int64_t schedWaitNs) {
+    int64_t elapsedSecs = elapsedUSecs / 1000000;
+    int64_t elapsedMs   = (elapsedUSecs % 1000000) / 1000;
+
+    util_ssnprintf(run->report, sizeof(run->report), "TIMEOUT:\n");
+    util_ssnprintf(run->report, sizeof(run->report),
+        "DESCRIPTION: Process exceeded %lds timeout (effective %" PRId64
+        "s, phase %s, x%" PRId64 " multiplier)\n",
+        (long)run->global->timing.tmOut, effectiveTmOutSecs, phaseStr, tmOutMultiplier);
+    util_ssnprintf(run->report, sizeof(run->report),
+        "ELAPSED: %" PRId64 ".%03" PRId64 "s\n", elapsedSecs, elapsedMs);
+    util_ssnprintf(run->report, sizeof(run->report),
+        "CONFIGURED_TIMEOUT: %lds\n", (long)run->global->timing.tmOut);
+    util_ssnprintf(run->report, sizeof(run->report),
+        "EFFECTIVE_TIMEOUT: %" PRId64 "s (phase %s, x%" PRId64 " multiplier)\n",
+        effectiveTmOutSecs, phaseStr, tmOutMultiplier);
+    util_ssnprintf(run->report, sizeof(run->report), "PHASE: %s\n", phaseStr);
+    util_ssnprintf(run->report, sizeof(run->report), "SIGNAL: %s\n", signalUsed);
+    util_ssnprintf(run->report, sizeof(run->report),
+        "ORIG_FNAME: %s\n", run->dynfile ? run->dynfile->path : "N/A");
+    util_ssnprintf(run->report, sizeof(run->report),
+        "FUZZ_FNAME: %s\n", timeoutFileName[0] ? timeoutFileName : "N/A");
+    util_ssnprintf(run->report, sizeof(run->report), "INPUT_SIZE: %zu\n", inputSize);
+    util_ssnprintf(run->report, sizeof(run->report),
+        "MUTATIONS_PER_RUN: %u\n", run->mutationsPerRun);
+    util_ssnprintf(run->report, sizeof(run->report),
+        "MUTATION_DEPTH: %u\n", run->dynfile ? run->dynfile->depth : 0);
+    util_ssnprintf(run->report, sizeof(run->report),
+        "SELECT_COUNT: %u\n", run->dynfile ? run->dynfile->selectCnt : 0);
+    util_ssnprintf(run->report, sizeof(run->report), "PID: %d\n", (int)run->pid);
+
+    /* CPU time: if available, compute utilization percentage */
+    if (cpuUtimeTicks >= 0 && cpuStimeTicks >= 0) {
+        long hz = sysconf(_SC_CLK_TCK);
+        if (hz <= 0) hz = 100;
+        double cpuTimeSecs = (double)(cpuUtimeTicks + cpuStimeTicks) / (double)hz;
+        double wallTimeSecs = (double)elapsedUSecs / 1000000.0;
+        double cpuPct = wallTimeSecs > 0.0 ? (cpuTimeSecs / wallTimeSecs) * 100.0 : 0.0;
+        util_ssnprintf(run->report, sizeof(run->report),
+            "CPU_TIME: %.3fs (user=%ld stime=%ld ticks, %.1f%% utilization)\n",
+            cpuTimeSecs, cpuUtimeTicks, cpuStimeTicks, cpuPct);
+    }
+    if (vmRSSKb >= 0) {
+        util_ssnprintf(run->report, sizeof(run->report),
+            "VM_RSS: %ld kB\n", vmRSSKb);
+    }
+    if (loadAvg[0] >= 0.0) {
+        util_ssnprintf(run->report, sizeof(run->report),
+            "LOAD_AVG: %.2f %.2f %.2f\n", loadAvg[0], loadAvg[1], loadAvg[2]);
+    }
+    if (ioReadBytes >= 0 || ioWriteBytes >= 0) {
+        util_ssnprintf(run->report, sizeof(run->report),
+            "IO: read=%" PRId64 " write=%" PRId64 " bytes\n", ioReadBytes, ioWriteBytes);
+    }
+    if (schedRunNs >= 0 && schedWaitNs >= 0) {
+        double runMs  = (double)schedRunNs / 1e6;
+        double waitMs = (double)schedWaitNs / 1e6;
+        double totalMs = runMs + waitMs;
+        double schedPct = totalMs > 0.0 ? (runMs / totalMs) * 100.0 : 0.0;
+        util_ssnprintf(run->report, sizeof(run->report),
+            "SCHED: run=%.1fms wait=%.1fms (%.1f%% on-cpu)\n", runMs, waitMs, schedPct);
+    }
+    if (procWchan[0] != '\0') {
+        util_ssnprintf(run->report, sizeof(run->report), "WCHAN: %s\n", procWchan);
+    }
+    if (ctxVoluntary >= 0 || ctxInvoluntary >= 0) {
+        util_ssnprintf(run->report, sizeof(run->report),
+            "CTX_SWITCHES: voluntary=%ld involuntary=%ld\n", ctxVoluntary, ctxInvoluntary);
+    }
+    if (procStack[0] != '\0') {
+        util_ssnprintf(run->report, sizeof(run->report), "KERNEL STACK:\n%s\n", procStack);
+    }
 }
