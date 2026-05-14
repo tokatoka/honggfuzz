@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -101,11 +102,20 @@ void fetchSanPoison(const uint8_t* buf, size_t len) {
 
 void HonggfuzzFetchData(const uint8_t** buf_ptr, size_t* len_ptr) {
     if (!files_writeToFd(_HF_PERSISTENT_FD, &HFReadyTag, sizeof(HFReadyTag))) {
-        LOG_F("writeToFd(size=%zu, readyTag) failed", sizeof(HFReadyTag));
+        if (errno == EPIPE || errno == ECONNRESET) {
+            /* Parent closed the socket -clean shutdown so atexit handlers
+               (e.g. LLVM profile data writer) can flush. */
+            exit(0);
+        }
+        PLOG_F("write(fd=%d, HFReadyTag) failed", _HF_PERSISTENT_FD);
     }
 
     uint64_t rcvLens[2];
     ssize_t  sz = files_readFromFd(_HF_PERSISTENT_FD, (uint8_t*)rcvLens, sizeof(rcvLens));
+    if (sz == 0) {
+        /* EOF -parent closed the socket for graceful shutdown. */
+        exit(0);
+    }
     if (sz == -1) {
         PLOG_F("readFromFd(fd=%d, size=%zu) failed", _HF_PERSISTENT_FD, sizeof(rcvLens));
     }

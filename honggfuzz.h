@@ -457,6 +457,19 @@ typedef struct {
         int  clientSocket;
     } socketFuzzer;
     struct {
+        uint8_t*        coveredGuards;
+        uint64_t        coveredGuardsSize;
+        size_t          requiredFileCnt;
+        pthread_mutex_t requiredFilesMutex;
+        char**          requiredFiles;
+        size_t          requiredFilesCap;
+    } coverageRequired;
+    struct {
+        int             fd;
+        size_t          entryCnt;
+        pthread_mutex_t entryMutex;
+    } coverageData;
+    struct {
         pthread_rwlock_t dynfileq;
         pthread_mutex_t  feedback;
         pthread_mutex_t  report;
@@ -522,6 +535,7 @@ typedef struct {
     int          rssExceedCount;    /* Consecutive RSS-over-limit checks (debounce) */
     char*        args[_HF_ARGS_MAX + 1];
     int          perThreadCovFeedbackFd;
+    uint8_t*     perThreadCovFeedbackMap;
     unsigned     triesLeft;
     dynfile_t*   current;
     hwcnt_t      hwCnts;

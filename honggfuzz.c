@@ -57,6 +57,9 @@
 #include "subproc.h"
 #include "hfuzz_metrics.h"
 
+extern int hfuzz_write_coverage_required_json(
+    const char* path, const char* const* files, size_t count) __attribute__((weak));
+
 #if defined(_HF_ARCH_LINUX) && !defined(_HF_LINUX_NO_BFD)
 #include "linux/bfd.h"
 #endif
@@ -601,6 +604,7 @@ int main(int argc, char** argv) {
     if (!cmdlineParse(argc, myargs, &hfuzz)) {
         LOG_F("Parsing of the cmd-line arguments failed");
     }
+    hfuzz.coverageData.fd = -1;
     if (hfuzz.io.inputDir && access(hfuzz.io.inputDir, R_OK) == -1) {
         PLOG_F("Input directory '%s' is not readable", hfuzz.io.inputDir);
     }
@@ -785,14 +789,48 @@ int main(int argc, char** argv) {
             /* Generate output path for JSON coverage report if coverage dir is set */
             char coverage_path[PATH_MAX] = {0};
             if (hfuzz.io.covDirNew) {
-                snprintf(coverage_path, sizeof(coverage_path),
-                         "%s/coverage_report.json", hfuzz.io.covDirNew);
+                int cp = snprintf(coverage_path, sizeof(coverage_path),
+                                  "%s/coverage_report.json", hfuzz.io.covDirNew);
+                if (cp < 0 || (size_t)cp >= sizeof(coverage_path)) {
+                    coverage_path[0] = '\0';
+                }
             }
 
             hfuzz_metrics_log_full_coverage_report(
                 hfuzz.feedback.covFeedbackMap->pcGuardMap,
                 guardNb,
                 coverage_path[0] ? coverage_path : NULL);
+        }
+
+        if (hfuzz.coverageData.fd >= 0) {
+            uint64_t guardNbFinal = atomic_load_explicit(&hfuzz.feedback.covFeedbackMap->guardNb, memory_order_relaxed);
+            uint64_t fileCntFinal = (uint64_t)ATOMIC_GET(hfuzz.coverageData.entryCnt);
+            if (!fuzz_coverageDataFinalizeHeader(hfuzz.coverageData.fd, guardNbFinal, fileCntFinal)) {
+                PLOG_W("Failed to finalize coverage_data.bin header");
+            }
+            close(hfuzz.coverageData.fd);
+            hfuzz.coverageData.fd = -1;
+            LOG_I("Wrote %zu coverage data entries to coverage_data.bin", (size_t)fileCntFinal);
+        }
+
+        if (ATOMIC_GET(hfuzz.coverageRequired.requiredFileCnt) > 0 && hfuzz.io.covDirNew) {
+            char req_path[PATH_MAX];
+            int n = snprintf(req_path, sizeof(req_path), "%s/coverage_required.json",
+                             hfuzz.io.covDirNew);
+            if (n < 0 || (size_t)n >= sizeof(req_path)) {
+                LOG_E("coverage_required.json path too long (covDirNew='%s')", hfuzz.io.covDirNew);
+            } else {
+                size_t cnt = ATOMIC_GET(hfuzz.coverageRequired.requiredFileCnt);
+                if (!hfuzz_write_coverage_required_json) {
+                    LOG_E("coverage_required.json writer not linked (missing RapidJSON?)");
+                } else if (hfuzz_write_coverage_required_json(
+                               req_path, (const char* const*)hfuzz.coverageRequired.requiredFiles,
+                               cnt) != 0) {
+                    LOG_E("Failed to write coverage_required.json");
+                } else {
+                    LOG_I("Wrote %zu coverage-required files to %s", cnt, req_path);
+                }
+            }
         }
 
         const char* status = (hfuzz.cfg.exitUponCrash && ATOMIC_GET(hfuzz.cnts.crashesCnt) > 0)

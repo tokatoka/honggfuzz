@@ -31,5 +31,6 @@ extern bool        fuzz_isTerminating(void);
 extern void        fuzz_setTerminating(void);
 extern bool        fuzz_shouldTerminate(void);
 extern fuzzState_t fuzz_getState(honggfuzz_t* hfuzz);
+extern bool        fuzz_coverageDataFinalizeHeader(int fd, uint64_t guardCount, uint64_t fileCount);
 
 #endif

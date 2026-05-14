@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc g++ make pkg-config libunwind-dev binutils-dev
+          sudo apt-get install -y gcc g++ make pkg-config libunwind-dev binutils-dev python3
 
       - name: Build honggfuzz
         run: make -j$(nproc)
@@ -39,7 +39,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc g++ make pkg-config libunwind-dev binutils-dev
+          sudo apt-get install -y gcc g++ make pkg-config libunwind-dev binutils-dev python3
 
       - name: Build honggfuzz
         run: make -j$(nproc)
@@ -55,3 +55,6 @@ jobs:
 
       - name: Run crossover invariants test
         run: ./tests/test_crossover_invariants
+
+      - name: Run replay mode test
+        run: bash tests/test_replay.sh

@@ -50,6 +50,9 @@
 #include "libhfcommon/log.h"
 #include "libhfcommon/util.h"
 
+extern int hfuzz_write_coverage_required_json(
+    const char* path, const char* const* files, size_t count) __attribute__((weak));
+
 struct custom_option {
     struct option opt;
     const char*   descr;
@@ -251,6 +254,16 @@ static bool cmdlineVerify(honggfuzz_t* hfuzz) {
     }
     if (hfuzz->threads.threadsMax == 0) {
         LOG_E("Too few fuzzing threads specified: %zu", hfuzz->threads.threadsMax);
+        return false;
+    }
+
+    if (hfuzz->cfg.replay && hfuzz->cfg.minimize) {
+        LOG_E("--replay and --minimize are mutually exclusive");
+        return false;
+    }
+
+    if (hfuzz->cfg.replay && !hfuzz_write_coverage_required_json) {
+        LOG_E("--replay requires the RapidJSON coverage writer (link metrics/coverage_json.cxx)");
         return false;
     }
 

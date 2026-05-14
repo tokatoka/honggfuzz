@@ -351,6 +351,12 @@ void display_display(honggfuzz_t* hfuzz) {
     case _HF_STATE_DYNAMIC_MINIMIZE:
         display_put("\n  Mode [3/3] : " ESC_BOLD "Corpus Minimization" ESC_RESET "\n");
         break;
+    case _HF_STATE_REPLAY:
+        display_put("\n        Mode : " ESC_BOLD "Replay (Coverage Collection)" ESC_RESET
+                    " [%zu/%zu] cov-required:%zu\n",
+            hfuzz->io.testedFileCnt, hfuzz->io.fileCnt,
+            ATOMIC_GET(hfuzz->coverageRequired.requiredFileCnt));
+        break;
     default:
         display_put("\n        Mode : " ESC_BOLD "Unknown" ESC_RESET "\n");
         break;

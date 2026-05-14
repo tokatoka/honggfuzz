@@ -51,6 +51,14 @@ RAPIDJSON_DIR ?= third_party/rapidjson
 CLICKHOUSE_CPP_DIR ?= third_party/clickhouse-cpp
 METRICS_CXXFLAGS := -std=c++23 -fPIC -fno-omit-frame-pointer -O2 -g -I. -DSOLFUZZ_SHARED_LIB=1
 
+ifdef RAPIDJSON_DIR
+    METRICS_CXXFLAGS += -I$(RAPIDJSON_DIR)/include
+endif
+
+COVERAGE_JSON_SRC := metrics/coverage_json.cxx
+COVERAGE_JSON_OBJ := $(COVERAGE_JSON_SRC:.cxx=.o)
+COMMON_LDFLAGS += -lstdc++
+
 ifeq ($(SOLFUZZ_METRICS_ENABLED),1)
     METRICS_SRCS := metrics/hfuzz_metrics_bridge.cxx \
                     metrics/metrics_logger.cxx \
@@ -59,10 +67,6 @@ ifeq ($(SOLFUZZ_METRICS_ENABLED),1)
                     metrics/coverage_symbolizer.cxx \
                     metrics/fuzzer_corpus_collector.cxx
     METRICS_OBJS := $(METRICS_SRCS:.cxx=.o)
-
-    ifdef RAPIDJSON_DIR
-        METRICS_CXXFLAGS += -I$(RAPIDJSON_DIR)/include
-    endif
 
     ifeq ($(SOLFUZZ_CLICKHOUSE_ENABLED),1)
         METRICS_CXXFLAGS += -DSOLFUZZ_CLICKHOUSE_ENABLED=1
@@ -76,10 +80,12 @@ ifeq ($(SOLFUZZ_METRICS_ENABLED),1)
         COMMON_LDFLAGS += -lclickhouse-cpp-lib -lssl -lcrypto -labsl_strings -labsl_throw_delegate
     endif
 
-    COMMON_LDFLAGS += -lstdc++ -lpthread -ldl
+    COMMON_LDFLAGS += -lpthread -ldl
     HONGGFUZZ_LDFLAGS += -Wl,--export-dynamic-symbol='hfuzz_metrics_bridge_*'
     $(info Honggfuzz: Building with inline metrics (SOLFUZZ_METRICS_ENABLED=1))
 endif
+
+METRICS_OBJS += $(COVERAGE_JSON_OBJ)
 
 REALOS = $(shell uname -s)
 OS ?= $(shell uname -s)

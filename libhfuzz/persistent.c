@@ -473,7 +473,15 @@ static int HonggfuzzRunFromFile(int argc, char** argv) {
     return ret;
 }
 
+/* Coverage replay entry point (defined in Rust when built with cargo hfuzz).
+   Dispatched when SOLFUZZ_REPLAY_COVERAGE env var is set. */
+__attribute__((weak)) int solfuzz_replay_coverage_main(int argc, char** argv);
+
 int HonggfuzzMain(int argc, char** argv) {
+    if (getenv("SOLFUZZ_REPLAY_COVERAGE") && solfuzz_replay_coverage_main) {
+        return solfuzz_replay_coverage_main(argc, argv);
+    }
+
     if (LLVMFuzzerInitialize) {
         LLVMFuzzerInitialize(&argc, &argv);
     }
