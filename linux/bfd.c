@@ -69,38 +69,6 @@ typedef struct {
 
 static pthread_mutex_t arch_bfd_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static bool arch_bfdInit(pid_t pid, bfd_t* bfdParams) {
-    char fname[PATH_MAX];
-    snprintf(fname, sizeof(fname), "/proc/%d/exe", pid);
-    if ((bfdParams->bfdh = bfd_openr(fname, 0)) == NULL) {
-        LOG_E("bfd_openr(%s) failed", fname);
-        return false;
-    }
-
-    if (!bfd_check_format(bfdParams->bfdh, bfd_object)) {
-        LOG_E("bfd_check_format() failed");
-        return false;
-    }
-
-    int storage_needed = bfd_get_symtab_upper_bound(bfdParams->bfdh);
-    if (storage_needed <= 0) {
-        LOG_E("bfd_get_symtab_upper_bound() returned '%d'", storage_needed);
-        return false;
-    }
-    bfdParams->syms = (asymbol**)util_Calloc(storage_needed);
-    bfd_canonicalize_symtab(bfdParams->bfdh, bfdParams->syms);
-
-    storage_needed = bfd_get_dynamic_symtab_upper_bound(bfdParams->bfdh);
-    if (storage_needed <= 0) {
-        LOG_E("bfd_get_dynamic_symtab_upper_bound() returned '%d'", storage_needed);
-        return false;
-    }
-    bfdParams->dsyms = (asymbol**)util_Calloc(storage_needed);
-    bfd_canonicalize_dynamic_symtab(bfdParams->bfdh, bfdParams->dsyms);
-
-    return true;
-}
-
 static void arch_bfdDestroy(bfd_t* bfdParams) {
     if (bfdParams->syms) {
         free(bfdParams->syms);
@@ -114,6 +82,45 @@ static void arch_bfdDestroy(bfd_t* bfdParams) {
         bfd_close(bfdParams->bfdh);
         bfdParams->bfdh = NULL;
     }
+}
+
+static bool arch_bfdInitPath(const char* path, bfd_t* bfdParams) {
+    if ((bfdParams->bfdh = bfd_openr(path, 0)) == NULL) {
+        LOG_E("bfd_openr(%s) failed", path);
+        return false;
+    }
+
+    if (!bfd_check_format(bfdParams->bfdh, bfd_object)) {
+        LOG_E("bfd_check_format(%s) failed", path);
+        arch_bfdDestroy(bfdParams);
+        return false;
+    }
+
+    int storage_needed = bfd_get_symtab_upper_bound(bfdParams->bfdh);
+    if (storage_needed > 0) {
+        bfdParams->syms = (asymbol**)util_Calloc(storage_needed);
+        bfd_canonicalize_symtab(bfdParams->bfdh, bfdParams->syms);
+    } else {
+        LOG_D("bfd_get_symtab_upper_bound(%s) returned '%d', skipping static symtab", path,
+            storage_needed);
+    }
+
+    storage_needed = bfd_get_dynamic_symtab_upper_bound(bfdParams->bfdh);
+    if (storage_needed > 0) {
+        bfdParams->dsyms = (asymbol**)util_Calloc(storage_needed);
+        bfd_canonicalize_dynamic_symtab(bfdParams->bfdh, bfdParams->dsyms);
+    } else {
+        LOG_D("bfd_get_dynamic_symtab_upper_bound(%s) returned '%d', skipping dynamic symtab", path,
+            storage_needed);
+    }
+
+    if (bfdParams->syms == NULL && bfdParams->dsyms == NULL) {
+        LOG_E("No symbol tables found in %s", path);
+        arch_bfdDestroy(bfdParams);
+        return false;
+    }
+
+    return true;
 }
 
 void arch_bfdDemangle(funcs_t* funcs, size_t funcCnt) {
@@ -144,52 +151,161 @@ static struct bfd_section* arch_getSectionForPc(bfd* bfdh, uint64_t pc) {
     return NULL;
 }
 
+/*
+ * Resolve a single frame's symbol using an already-opened BFD handle.
+ * `file_pc` must be the PC relative to the module's file (i.e., runtime PC
+ * minus the module's load base for shared libraries, or the raw PC for PIE
+ * executables loaded at their linked base).
+ */
+static void arch_bfdResolveOne(bfd_t* bfdParams, funcs_t* f, uint64_t file_pc) {
+    struct bfd_section* section = arch_getSectionForPc(bfdParams->bfdh, file_pc);
+    if (section == NULL) {
+        return;
+    }
+
+    long sec_offset = (long)file_pc - bfd_get_section_vma(bfdParams->bfdh, section);
+
+    const char*  func = NULL;
+    const char*  file = NULL;
+    unsigned int line = 0;
+    if (bfdParams->syms &&
+        bfd_find_nearest_line(
+            bfdParams->bfdh, section, bfdParams->syms, sec_offset, &file, &func, &line) == TRUE) {
+        snprintf(f->func, sizeof(f->func), "%s", func ? func : "");
+        snprintf(f->file, sizeof(f->file), "%s", file ? file : "");
+        f->line = line;
+    }
+    if ((func == NULL || func[0] == '\0') && bfdParams->dsyms) {
+        if (bfd_find_nearest_line(bfdParams->bfdh, section, bfdParams->dsyms, sec_offset, &file,
+                &func, &line) == TRUE) {
+            snprintf(f->func, sizeof(f->func), "%s", func ? func : "");
+            snprintf(f->file, sizeof(f->file), "%s", file ? file : "");
+            f->line = line;
+        }
+    }
+}
+
+typedef struct {
+    uint64_t start;
+    uint64_t end;
+    uint64_t offset;
+    char     name[PATH_MAX];
+} map_entry_t;
+
+#define _HF_MAX_MAP_ENTRIES 256
+
+static size_t arch_parseMaps(pid_t pid, map_entry_t* entries, size_t max_entries) {
+    char fProcMaps[PATH_MAX];
+    snprintf(fProcMaps, sizeof(fProcMaps), "/proc/%d/maps", pid);
+
+    FILE* f = fopen(fProcMaps, "rb");
+    if (f == NULL) {
+        return 0;
+    }
+
+    size_t count = 0;
+    char   line_buf[PATH_MAX + 256];
+    while (fgets(line_buf, sizeof(line_buf), f) && count < max_entries) {
+        unsigned long start, end, offset;
+        char          perms[6], dev[8], name[PATH_MAX];
+        unsigned long inode;
+        name[0] = '\0';
+        if (sscanf(line_buf, "%lx-%lx %5s %lx %7s %lu %s", &start, &end, perms, &offset, dev,
+                &inode, name) >= 6 &&
+            name[0] != '\0') {
+            entries[count].start  = (uint64_t)start;
+            entries[count].end    = (uint64_t)end;
+            entries[count].offset = (uint64_t)offset;
+            snprintf(entries[count].name, sizeof(entries[count].name), "%s", name);
+            count++;
+        }
+    }
+
+    fclose(f);
+    return count;
+}
+
+static uint64_t arch_lookupModuleBase(
+    const map_entry_t* entries, size_t count, const char* module, uint64_t addr) {
+    for (size_t i = 0; i < count; i++) {
+        if (addr >= entries[i].start && addr < entries[i].end &&
+            strcmp(entries[i].name, module) == 0) {
+            return entries[i].start - entries[i].offset;
+        }
+    }
+    return 0;
+}
+
+#define _HF_BFD_CACHE_MAX 8
+
 void arch_bfdResolveSyms(pid_t pid, funcs_t* funcs, size_t num) {
     /* Guess what? libbfd is not multi-threading safe */
     MX_SCOPED_LOCK(&arch_bfd_mutex);
 
     bfd_init();
 
-    bfd_t bfdParams = {
-        .bfdh  = NULL,
-        .syms  = NULL,
-        .dsyms = NULL,
-    };
+    /* Parse /proc/<pid>/maps once so we don't reopen it per frame. */
+    map_entry_t* maps    = (map_entry_t*)util_Calloc(sizeof(map_entry_t) * _HF_MAX_MAP_ENTRIES);
+    size_t       mapsCnt = arch_parseMaps(pid, maps, _HF_MAX_MAP_ENTRIES);
 
-    if (!arch_bfdInit(pid, &bfdParams)) {
-        return;
-    }
+    /* Cache of opened BFD handles keyed by module path to avoid reopening the
+     * same binary for every frame. */
+    struct {
+        char  path[PATH_MAX];
+        bfd_t bfd;
+    } cache[_HF_BFD_CACHE_MAX];
+    size_t cacheCnt = 0;
 
-    const char*  func;
-    const char*  file;
-    unsigned int line;
     for (unsigned int i = 0; i < num; i++) {
         snprintf(funcs[i].func, sizeof(funcs->func), "UNKNOWN");
         if (funcs[i].pc == NULL) {
             continue;
         }
-        struct bfd_section* section = arch_getSectionForPc(bfdParams.bfdh, (uintptr_t)funcs[i].pc);
-        if (section == NULL) {
+
+        const char* module = funcs[i].module;
+        if (module[0] == '\0' || strcmp(module, "UNKNOWN") == 0) {
             continue;
         }
 
-        long sec_offset = (long)funcs[i].pc - bfd_get_section_vma(bfdParams.bfdh, section);
+        /* Look up or create a BFD handle for this module. */
+        bfd_t* bp = NULL;
+        for (size_t c = 0; c < cacheCnt; c++) {
+            if (strcmp(cache[c].path, module) == 0) {
+                bp = &cache[c].bfd;
+                break;
+            }
+        }
+        if (bp == NULL) {
+            if (cacheCnt >= _HF_BFD_CACHE_MAX) {
+                continue;
+            }
+            bfd_t newBfd = {.bfdh = NULL, .syms = NULL, .dsyms = NULL};
+            if (!arch_bfdInitPath(module, &newBfd)) {
+                continue;
+            }
+            snprintf(cache[cacheCnt].path, sizeof(cache[cacheCnt].path), "%s", module);
+            cache[cacheCnt].bfd = newBfd;
+            bp                  = &cache[cacheCnt].bfd;
+            cacheCnt++;
+        }
 
-        if (bfd_find_nearest_line(
-                bfdParams.bfdh, section, bfdParams.syms, sec_offset, &file, &func, &line) == TRUE) {
-            snprintf(funcs[i].func, sizeof(funcs->func), "%s", func ? func : "");
-            snprintf(funcs[i].file, sizeof(funcs->file), "%s", file ? file : "");
-            funcs[i].line = line;
+        /* For shared libraries, subtract the load base so the PC is
+         * file-relative. For PIE executables the load base is typically
+         * non-zero too, but /proc/pid/exe is a symlink to the same
+         * binary so the same logic applies. */
+        uint64_t file_pc = (uint64_t)(uintptr_t)funcs[i].pc;
+        uint64_t base    = arch_lookupModuleBase(maps, mapsCnt, module, file_pc);
+        if (base != 0 && file_pc >= base) {
+            file_pc -= base;
         }
-        if (bfd_find_nearest_line(
-                bfdParams.bfdh, section, bfdParams.syms, sec_offset, &file, &func, &line) == TRUE) {
-            snprintf(funcs[i].func, sizeof(funcs->func), "%s", func ? func : "");
-            snprintf(funcs[i].file, sizeof(funcs->file), "%s", file ? file : "");
-            funcs[i].line = line;
-        }
+
+        arch_bfdResolveOne(bp, &funcs[i], file_pc);
     }
 
-    arch_bfdDestroy(&bfdParams);
+    for (size_t c = 0; c < cacheCnt; c++) {
+        arch_bfdDestroy(&cache[c].bfd);
+    }
+    free(maps);
 }
 
 static int arch_bfdFPrintF(void* buf, const char* fmt, ...) {
