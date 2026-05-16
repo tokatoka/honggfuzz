@@ -296,6 +296,9 @@ static bool subproc_PrepareExecv(run_t* run) {
         snprintf(buf, sizeof(buf), "%zu", run->global->mutate.maxInputSz);
         setenv("HFUZZ_MAX_INPUT_SZ", buf, 1);
     }
+    if (run->global->cfg.replay) {
+        setenv("HFUZZ_REPLAY_MODE", "1", 1);
+    }
     if (run->global->exe.netDriver) {
         setenv(_HF_THREAD_NETDRIVER_ENV, "1", 1);
     }

@@ -65,15 +65,21 @@ static register_coverage_feedback_fn fn_register_coverage_feedback = NULL;
 static log_mutation_health_fn  fn_log_mutation_health = NULL;
 static log_stats_fn            fn_log_stats = NULL;
 
-static bool s_resolved = false;
+static bool s_resolved  = false;
+static bool s_disabled  = false;
 
 /*
  * Resolve function pointers from the metrics bridge library at runtime.
  * Uses dlsym(RTLD_DEFAULT, ...) to find symbols in any loaded library.
  */
+void hfuzz_metrics_disable(void) {
+    s_disabled = true;
+}
+
 static void resolve_metrics_functions(void) {
     if (s_resolved) return;
     s_resolved = true;
+    if (s_disabled) return;
 
     fprintf(stderr, "[hfuzz_metrics] Resolving metrics bridge symbols via dlsym...\n");
 

@@ -619,13 +619,15 @@ int main(int argc, char** argv) {
     if (hfuzz.cfg.replay) {
         hfuzz.mutate.mutationsPerRun = 0;
         hfuzz.exe.useCustomMutator   = false;
+        hfuzz.exe.useCrossover       = false;
         if (hfuzz.timing.tmOut > 0) {
             hfuzz.timing.tmOut *= 10;
         }
         if (hfuzz.feedback.dynFileMethod == _HF_DYNFILE_NONE) {
             hfuzz.feedback.dynFileMethod = _HF_DYNFILE_SOFT;
         }
-        LOG_I("Replay mode: mutations disabled, custom mutator disabled, "
+        hfuzz_metrics_disable();
+        LOG_I("Replay mode: mutations/crossover/metrics disabled, "
               "timeout=%ld s, dynFileMethod=0x%x",
             (long)hfuzz.timing.tmOut,
             (unsigned)hfuzz.feedback.dynFileMethod);

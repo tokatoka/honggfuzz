@@ -15,6 +15,7 @@ extern "C" {
  * target_name: name of the fuzz target binary
  * argc/argv: command line arguments
  */
+void hfuzz_metrics_disable(void);
 void hfuzz_metrics_session_init(const char* target_name, int argc, char** argv);
 
 /*

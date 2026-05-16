@@ -255,6 +255,13 @@ static void HonggfuzzPersistentLoop(void) {
     bool use_crossover      = true;
     unsigned int crossover_pct = 25;
 
+    const char *replay_env = getenv("HFUZZ_REPLAY_MODE");
+    if (replay_env && replay_env[0] == '1') {
+        use_custom_mutator = false;
+        use_crossover      = false;
+        LOG_I("HFUZZ_REPLAY_MODE=1: all in-process mutations DISABLED");
+    }
+
     const char *cm_env = getenv("HFUZZ_USE_CUSTOM_MUTATOR");
     if (cm_env && (cm_env[0] == '0' || cm_env[0] == 'n' || cm_env[0] == 'N')) {
         use_custom_mutator = false;
