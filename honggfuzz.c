@@ -616,6 +616,21 @@ int main(int argc, char** argv) {
         hfuzz.threads.threadsMax = 1;
     }
 
+    if (hfuzz.cfg.replay) {
+        hfuzz.mutate.mutationsPerRun = 0;
+        hfuzz.exe.useCustomMutator   = false;
+        if (hfuzz.timing.tmOut > 0) {
+            hfuzz.timing.tmOut *= 10;
+        }
+        if (hfuzz.feedback.dynFileMethod == _HF_DYNFILE_NONE) {
+            hfuzz.feedback.dynFileMethod = _HF_DYNFILE_SOFT;
+        }
+        LOG_I("Replay mode: mutations disabled, custom mutator disabled, "
+              "timeout=%ld s, dynFileMethod=0x%x",
+            (long)hfuzz.timing.tmOut,
+            (unsigned)hfuzz.feedback.dynFileMethod);
+    }
+
     char tmstr[64];
     util_getLocalTime("%F.%H.%M.%S", tmstr, sizeof(tmstr), time(NULL));
     LOG_I("Start time:'%s' bin:'%s', input:'%s', output:'%s', persistent:%s, stdin:%s, "

@@ -119,6 +119,12 @@ static void fuzz_setDynamicMainState(run_t* run) {
         return;
     }
 
+    if (run->global->cfg.replay) {
+        LOG_I("Replay complete: all corpus files processed");
+        fuzz_setTerminating();
+        return;
+    }
+
     /*
      * If the initial fuzzing yielded no useful coverage, just add a single empty file to the
      * dynamic corpus, so the dynamic phase doesn't fail because of lack of useful inputs

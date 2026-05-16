@@ -398,6 +398,9 @@ static bool input_cmpCov(dynfile_t* item1, dynfile_t* item2) {
     for ((var) = TAILQ_FIRST((head)); (var); (var) = TAILQ_NEXT((var), field))
 
 void input_addDynamicInput(run_t* run) {
+    if (run->global->cfg.replay) {
+        return;
+    }
     time_t now = time(NULL);
     ATOMIC_SET(run->global->timing.lastCovUpdate, now);
 
