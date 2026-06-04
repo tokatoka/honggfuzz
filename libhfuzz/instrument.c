@@ -56,9 +56,17 @@ fuzz_data_t* globalCmpFeedback = NULL;
 
 uint32_t my_thread_no = 0;
 
-__attribute__((tls_model("initial-exec"))) __thread uintptr_t hfuzz_prev_pc     = 0;
-__attribute__((tls_model("initial-exec"))) __thread uintptr_t hfuzz_prev_cmp_pc = 0;
-__attribute__((tls_model("initial-exec"))) __thread uint64_t  hfuzz_path_hash   = 0;
+/* These were initial-exec, but IE TLS emits R_X86_64_TPOFF64 relocs which set
+ * DF_STATIC_TLS on the resulting shared object.  That forces the *entire* module
+ * TLS block into the process's fixed static-TLS area at dlopen time, so dlopen of
+ * an instrumented .so fails with "cannot allocate memory in static TLS block" once
+ * the module's TLS is large or over-aligned (a limit that GLIBC_TUNABLES=
+ * glibc.rtld.optional_static_tls cannot raise past the static-TLS alignment).
+ * The default (general-dynamic) model allocates TLS dynamically per-thread instead,
+ * at the cost of a __tls_get_addr call on access. */
+__thread uintptr_t hfuzz_prev_pc     = 0;
+__thread uintptr_t hfuzz_prev_cmp_pc = 0;
+__thread uint64_t  hfuzz_path_hash   = 0;
 
 static uint32_t localGuardTouched[65536]  = {};
 static uint32_t localGuardTouchedCnt      = 0;
@@ -1312,7 +1320,7 @@ unsigned instrumentThreadNo(void) {
 /* Cygwin has problem with visibility of this symbol */
 #if !defined(__CYGWIN__)
 /* For some reason -fsanitize=fuzzer-no-link references this symbol */
-__attribute__((tls_model("initial-exec")))
+/* Not initial-exec: avoids DF_STATIC_TLS on the instrumented .so (see hfuzz_prev_pc). */
 __attribute__((weak)) __thread uintptr_t __sancov_lowest_stack = 0;
 
 /* Base stack pointer at start of each iteration */
