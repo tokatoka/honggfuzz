@@ -742,6 +742,16 @@ void subproc_checkTimeLimit(run_t* run) {
 
 void subproc_checkTermination(run_t* run) {
     if (fuzz_isTerminating()) {
+        /* Coverage-replay mode: don't SIGKILL the in-flight persistent child here.
+           Let its current input finish so the per-thread shutdown in fuzz_threadNew()
+           can close the persistent socket and let the child flush its LLVM .profraw
+           via atexit (the child's fetch loop sees EOF and exit(0)s). A mid-corpus
+           --run_time cutoff would otherwise SIGKILL every in-flight child and drop
+           all of that lineage's coverage. Genuinely stuck inputs remain bounded by
+           subproc_checkTimeLimit(). */
+        if (run->global->cfg.replay) {
+            return;
+        }
         LOG_D("Killing pid=%d", (int)run->pid);
         kill(-(run->pid), SIGKILL);
         kill(run->pid, SIGKILL);
