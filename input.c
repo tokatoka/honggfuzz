@@ -485,6 +485,17 @@ void input_addDynamicInput(run_t* run) {
 
     ATOMIC_POST_INC(run->global->io.newUnitsAdded);
 
+    /* The feedback loop also accepts inputs that only refined an already-covered
+     * edge (a new hit-count bucket, a deeper stack, a lower instruction/branch
+     * count).  Those are worth keeping in the in-RAM queue, where they age out,
+     * but they dominate by volume and reach no new code, so exporting them to
+     * covDirNew swamps the genuinely novel inputs.  newEdges counts only
+     * softNewEdge + softNewPC + newBBCnt, so gating on it keeps covDirNew to
+     * inputs that actually reached new code. */
+    if (dynfile->newEdges < run->global->io.covDirNewMinEdges) {
+        return;
+    }
+
     if (run->global->io.covDirNew && !input_writeCovFile(run->global->io.covDirNew, dynfile)) {
         LOG_E("Couldn't save the new coverage data to '%s'", run->global->io.covDirNew);
     }

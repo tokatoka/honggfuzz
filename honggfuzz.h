@@ -306,6 +306,13 @@ typedef struct {
         char        workDir[PATH_MAX];
         const char* crashDir;
         const char* covDirNew;
+        /* Minimum newly-discovered edges/PCs/BBs an input must contribute before it
+         * is written to covDirNew.  0 (default) keeps the historical behaviour of
+         * exporting every input the feedback loop accepted, including those accepted
+         * only for a new hit-count bucket, a deeper stack, or a lower instruction
+         * count.  1 restricts covDirNew to inputs that reached genuinely new code,
+         * which is what a distributed fuzzer wants to share between hosts. */
+        uint64_t    covDirNewMinEdges;
         bool        saveUnique;
         bool        saveSmaller;
         size_t      dynfileqMaxSz;
