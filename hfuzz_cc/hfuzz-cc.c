@@ -18,7 +18,16 @@
 #include "libhfcommon/log.h"
 #include "libhfcommon/util.h"
 
+#include "hfuzz_cc/nobuiltin_funcs.h"
+
 #define ARGS_MAX 4096
+/*
+ * Headroom reserved in args[] for the flags this wrapper injects on top of the
+ * caller's argv. The worst case is the linker path: commonPreOpts (including
+ * one -fno-builtin-<fn> per wrapped function, see wrappedFuncs) plus ldMode's
+ * own additions. Keep this comfortably above that total.
+ */
+#define ARGS_INJECTED_MAX 512
 
 static bool isCXX                     = false;
 static bool isGCC                     = false;
@@ -406,6 +415,13 @@ static char* getLibHFCommonPath() {
     return path;
 }
 
+/*
+ * The functions libhfuzz/memorycmp.c wraps, as -fno-builtin-<fn> flags.
+ * Generated from memorycmp.c at build time, so a wrapper added there is
+ * covered automatically and the two cannot drift apart.
+ */
+static char* const wrappedFuncs[] = {HF_NOBUILTIN_FLAGS};
+
 static void commonPreOpts(int* j, char** args) {
     args[(*j)++] = getIncPaths();
 
@@ -424,7 +440,27 @@ static void commonPreOpts(int* j, char** args) {
         args[(*j)++] = "-inline-threshold=1000";
     }
 
-    args[(*j)++] = "-fno-builtin";
+    /*
+     * Keep the functions libhfuzz/memorycmp.c wraps out of the compiler's
+     * hands, so a call reaches the wrapper instead of being inlined or
+     * constant-folded and losing its instrumentUpdateCmpMap feedback.
+     *
+     * This used to be a blanket -fno-builtin, which also disabled the math
+     * builtins. That has a consequence well beyond coverage: with pow() opaque,
+     * the compiler stops contracting floating-point expressions it would
+     * otherwise fuse, so an instrumented build computes different FP results
+     * than the same source built normally. Anyone diffing an instrumented
+     * target against a reference implementation is then comparing a binary
+     * that does not match the one they ship -- firedancer #10553 was a 1-ulp
+     * consensus divergence that was invisible to differential fuzzing for that
+     * exact reason. Disable the wrapped functions by name instead.
+     *
+     * Names the compiler does not recognize are accepted and ignored, so the
+     * list can mirror memorycmp.c exactly.
+     */
+    for (size_t i = 0; i < ARRAYSIZE(wrappedFuncs); i++) {
+        args[(*j)++] = wrappedFuncs[i];
+    }
     args[(*j)++] = "-fno-omit-frame-pointer";
     args[(*j)++] = "-D__NO_STRING_INLINES";
 
@@ -688,7 +724,7 @@ int main(int argc, char** argv) {
         return execCC(argc, argv);
     }
 
-    if (argc > (ARGS_MAX - 128)) {
+    if (argc > (ARGS_MAX - ARGS_INJECTED_MAX)) {
         LOG_F("'%s': Too many positional arguments: %d", argv[0], argc);
         return EXIT_FAILURE;
     }

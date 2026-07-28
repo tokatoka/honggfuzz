@@ -15,3 +15,4 @@ libs
 obj
 examples/badcode/targets/badcode1
 examples/badcode/targets/badcode2
+hfuzz_cc/nobuiltin_funcs.h

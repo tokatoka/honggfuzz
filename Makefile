@@ -249,6 +249,7 @@ SRCS := $(COMMON_SRCS) $(ARCH_SRCS)
 OBJS := $(SRCS:.c=.o)
 
 GIT_BUILDINFO_H := git_buildinfo.h
+NOBUILTIN_H := hfuzz_cc/nobuiltin_funcs.h
 
 LHFUZZ_SRCS := $(sort $(wildcard libhfuzz/*.c))
 LHFUZZ_OBJS := $(LHFUZZ_SRCS:.c=.o)
@@ -331,9 +332,9 @@ CLEAN_TARGETS := core Makefile.bak \
   $(LCOMMON_ARCH) $(LCOMMON_OBJS) \
   $(LNETDRIVER_ARCH) $(LNETDRIVER_OBJS) \
   $(MAC_GARGBAGE) $(ANDROID_GARBAGE) $(SUBDIR_GARBAGE) \
-  $(GIT_BUILDINFO_H)
+  $(GIT_BUILDINFO_H) $(NOBUILTIN_H)
 
-all: $(GIT_BUILDINFO_H) $(BIN) $(HFUZZ_CC_BIN) $(LHFUZZ_ARCH) $(LHFUZZ_SHARED) $(LCOMMON_ARCH) $(LNETDRIVER_ARCH)
+all: $(GIT_BUILDINFO_H) $(NOBUILTIN_H) $(BIN) $(HFUZZ_CC_BIN) $(LHFUZZ_ARCH) $(LHFUZZ_SHARED) $(LCOMMON_ARCH) $(LNETDRIVER_ARCH)
 
 # Generate git build info header with commit hash, author, and title
 .PHONY: $(GIT_BUILDINFO_H)
@@ -353,6 +354,25 @@ $(GIT_BUILDINFO_H):
 	 echo "#define GIT_COMMIT_TITLE \"$$GIT_TITLE\"" >> $@
 	@echo "" >> $@
 	@echo "#endif /* GIT_BUILDINFO_H */" >> $@
+
+# Derive the -fno-builtin-<fn> list from the functions libhfuzz/memorycmp.c
+# actually wraps, so adding a wrapper there cannot silently leave the compiler
+# free to inline it (see commonPreOpts in hfuzz_cc/hfuzz-cc.c).
+.PHONY: $(NOBUILTIN_H)
+$(NOBUILTIN_H): libhfuzz/memorycmp.c
+	@echo "Generating $@..."
+	@echo "/* Auto-generated from libhfuzz/memorycmp.c at build time - do not edit */" > $@
+	@echo "#ifndef HF_NOBUILTIN_FUNCS_H" >> $@
+	@echo "#define HF_NOBUILTIN_FUNCS_H" >> $@
+	@echo "" >> $@
+	@echo "#define HF_NOBUILTIN_FLAGS \\" >> $@
+	@tr '\n' ' ' < libhfuzz/memorycmp.c \
+	  | grep -oE 'HF_WEAK_WRAP\([^,]+,[[:space:]]*[A-Za-z_][A-Za-z_0-9]*' \
+	  | sed -E 's/.*,[[:space:]]*//' | grep -v '^func$$' | sort -u \
+	  | sed -E 's/.*/    "-fno-builtin-&", \\/' >> $@
+	@echo "    /* end */" >> $@
+	@echo "" >> $@
+	@echo "#endif /* HF_NOBUILTIN_FUNCS_H */" >> $@
 
 # honggfuzz.o depends on the git build info header
 honggfuzz.o: honggfuzz.c $(GIT_BUILDINFO_H)
@@ -381,7 +401,7 @@ mac/arch.o: mac/arch.c mac/mach_exc.h mac/mach_excServer.h
 $(BIN): $(OBJS) $(LCOMMON_ARCH) $(METRICS_OBJS)
 	$(LD) -o $(BIN) $(OBJS) $(METRICS_OBJS) $(LCOMMON_ARCH) $(LDFLAGS) $(HONGGFUZZ_LDFLAGS)
 
-$(HFUZZ_CC_BIN): $(LCOMMON_ARCH) $(LHFUZZ_ARCH) $(LNETDRIVER_ARCH) $(HFUZZ_CC_SRCS)
+$(HFUZZ_CC_BIN): $(LCOMMON_ARCH) $(LHFUZZ_ARCH) $(LNETDRIVER_ARCH) $(HFUZZ_CC_SRCS) $(NOBUILTIN_H)
 	$(LD) -o $@ $(HFUZZ_CC_SRCS) $(LCOMMON_ARCH) $(LDFLAGS) $(CFLAGS) $(CFLAGS_BLOCKS) -D_HFUZZ_INC_PATH=$(HFUZZ_INC)
 
 $(LCOMMON_OBJS): $(LCOMMON_SRCS)
