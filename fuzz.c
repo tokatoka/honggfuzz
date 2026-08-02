@@ -143,6 +143,9 @@ static void fuzz_setDynamicMainState(run_t* run) {
         };
         dynfile_t* tmp_dynfile = run->dynfile;
         run->dynfile           = &dynfile;
+        /* Synthesised here, not imported.  Set explicitly because the flag lives on
+         * `run` and would otherwise carry over from a previous iteration. */
+        run->dynfileFromImport = false;
         input_addDynamicInput(run);
         run->dynfile = tmp_dynfile;
     }
@@ -360,7 +363,12 @@ static void fuzz_perfFeedback(run_t* run) {
             }
         }
 
-        /* Push useful imported input to dynamic queue again for the further mutations */
+        /* Push useful imported input to dynamic queue again for the further mutations.
+         * Clearing the flag is what makes the re-queued entry mutable, so it has to
+         * happen -- but it is also the only record that this input came from another
+         * host rather than from us, and covDirNew must not re-export it.  Carry that
+         * one bit across the clear. */
+        run->dynfileFromImport = run->dynfile->imported;
         if (run->dynfile->imported) {
             LOG_I("File imported: %s", run->dynfile->path);
             run->dynfile->imported = false;
@@ -689,7 +697,7 @@ bool fuzz_coverageDataFinalizeHeader(int fd, uint64_t guardCount, uint64_t fileC
         && TEMP_FAILURE_RETRY(pwrite(fd, &fileCount, 8, 16)) == 8;
 }
 
-static void fuzz_coverageDataAppendEntry(
+void fuzz_coverageDataAppendEntry(
         honggfuzz_t* hfuzz, const uint8_t* localMap, uint64_t guardNb, const char* base) {
     if (hfuzz->coverageData.fd < 0) return;
     if (guardNb > _HF_PC_GUARD_MAX) guardNb = _HF_PC_GUARD_MAX;
@@ -1003,7 +1011,15 @@ static void* fuzz_threadNew(void* arg) {
             sizeof(feedback_t), run.global->io.workDir);
     }
     run.perThreadCovFeedbackMap = NULL;
-    if (run.global->cfg.replay && run.global->io.covDirNew) {
+    /* Needed in both modes now: replay reads it per corpus file, fuzzing reads it for
+     * each input exported to --covdir_new.  The persistent child clears it at the top
+     * of every HonggfuzzRunOneInput (instrumentResetLocalCovFeedback), so it holds the
+     * guards of the input just executed.
+     *
+     * Same condition as the coverage_data.bin fd in fuzz_threadsStart, so a target that
+     * cannot produce per-input guards does not map _HF_PC_GUARD_MAX (128 MiB) per
+     * thread to never read it. */
+    if (run.global->io.covDirNew && (run.global->cfg.replay || run.global->exe.persistent)) {
         _Static_assert(
             offsetof(feedback_t, pcGuardMap) == 0, "mmap at offset 0 assumes pcGuardMap is first");
         int mflags = files_getTmpMapFlags(MAP_SHARED, /* nocore= */ true);
@@ -1091,7 +1107,20 @@ static void* fuzz_threadNew(void* arg) {
     return NULL;
 }
 
-static void fuzz_replayCoverageDataInit(honggfuzz_t* hfuzz) {
+/* Not replay-only despite the history: during fuzzing the same file is written, one
+ * entry per input exported to --covdir_new.  Octane reads it to compute guards_novel /
+ * guards_merged, which read a uniform zero for every fuzzing job for as long as this
+ * was gated on cfg.replay -- so the one number that would independently corroborate a
+ * job's reported discovery count carried no signal at all.
+ *
+ * Attributing guards to one input requires the per-thread map to be reset between
+ * executions, and only the persistent-mode child does that:
+ * instrumentResetLocalCovFeedback() at the top of HonggfuzzRunOneInput().  A
+ * non-persistent target maps the same per-thread file on every exec and
+ * initializeLocalCovFeedback() does not clear it, so its guards accumulate over the
+ * worker's whole history and every entry would overstate its input.  Hence the
+ * persistent requirement below -- record nothing rather than something wrong. */
+static void fuzz_coverageDataInit(honggfuzz_t* hfuzz) {
     if (pthread_mutex_init(&hfuzz->coverageRequired.requiredFilesMutex, NULL) != 0) {
         PLOG_F("pthread_mutex_init(requiredFilesMutex)");
     }
@@ -1135,15 +1164,35 @@ void fuzz_threadsStart(honggfuzz_t* hfuzz) {
         LOG_F("Couldn't prepare sanitizer options");
     }
 
+    hfuzz->coverageData.fd = -1;
+    if (hfuzz->io.covDirNew) {
+        /* Replay is unchanged -- it predates this and drives the map one corpus file at
+         * a time.  For fuzzing the map is only per-input under persistent mode. */
+        if (hfuzz->cfg.replay || hfuzz->exe.persistent) {
+            fuzz_coverageDataInit(hfuzz);
+        } else {
+            /* Reachable in practice only for targets built without hfuzz-cc: linking
+             * libhfuzz embeds _HF_PERSISTENT_SIG, so anything instrumented the normal
+             * way is detected as persistent above.  Such a target registers no guards,
+             * so there would be nothing to record anyway.
+             *
+             * A target instrumented some other way and genuinely not persistent could
+             * in principle be supported now -- initializeLocalCovFeedback() clears the
+             * inherited map in every freshly exec'd child, and for one-exec-per-input
+             * that is per-input attribution.  Left out because it could not be
+             * exercised here to confirm it. */
+            LOG_W("--covdir_new: not recording coverage_data.bin -- this target is not "
+                  "persistent, so per-input guard attribution is not established for it "
+                  "(a target built with hfuzz-cc is always detected as persistent; one "
+                  "that is not is typically uninstrumented and has no guards to record)");
+        }
+    }
+
     if (hfuzz->cfg.replay) {
         LOG_I("Entering Replay mode (coverage collection)");
         hfuzz->feedback.state = _HF_STATE_REPLAY;
         hfuzz->feedback.dynFileMethod |= _HF_DYNFILE_SOFT;
         hfuzz->mutate.mutationsPerRun = 0;
-        hfuzz->coverageData.fd = -1;
-        if (hfuzz->io.covDirNew) {
-            fuzz_replayCoverageDataInit(hfuzz);
-        }
     } else if (hfuzz->socketFuzzer.enabled) {
         /* Don't do dry run with socketFuzzer */
         LOG_I("Entering phase - Feedback Driven Mode (SocketFuzzer)");

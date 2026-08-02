@@ -128,7 +128,24 @@ extern feedback_t* globalCovFeedback;
 extern uint32_t    my_thread_no;
 
 void HF_ITER(const uint8_t** buf_ptr, size_t* len_ptr) {
+    /* The libFuzzer driver resets the per-thread guard map in HonggfuzzRunOneInput();
+     * this manual API has no equivalent hook, so it has to happen here.  Without it the
+     * map accumulates across iterations and anything reading it per input -- replay's
+     * coverage check, and the per-file records covdir_new writes to coverage_data.bin
+     * -- credits this input with guards that earlier ones reached.
+     *
+     * After the fetch, never before it.  HonggfuzzFetchData() writes HFReadyTag first,
+     * which is what tells the parent the previous input is finished and its map is
+     * ready to read; resetting ahead of that wipes the results the parent is about to
+     * collect.  By the time the call returns the parent has sent the next input, so it
+     * is done with the previous one and the map can be cleared for this one.
+     *
+     * Not folded into HonggfuzzFetchData() itself: the driver loop calls that before
+     * running the custom mutator and then resets again in RunOneInput, so a reset there
+     * would be redundant -- and the redundant pass is a full bzero of the guard map
+     * whenever the touched-list has overflowed, on the hot path. */
     HonggfuzzFetchData(buf_ptr, len_ptr);
+    instrumentResetLocalCovFeedback();
 }
 
 /* Proto parse counter accessors (defined in kutator's libfuzzer_macro.cc,

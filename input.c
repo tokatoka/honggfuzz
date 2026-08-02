@@ -359,16 +359,15 @@ static void input_generateFileName(dynfile_t* dynfile, const char* dir, char fna
     }
 }
 
-bool input_writeCovFile(const char* dir, dynfile_t* dynfile) {
-    char fname[PATH_MAX];
-    input_generateFileName(dynfile, dir, fname);
-
+/* Write `dynfile` to an already-generated path.  Split out so callers that need the
+ * name for something else do not pay input_generateFileName's two CRC64 passes twice. */
+static bool input_writeCovFileAs(const char* fname, dynfile_t* dynfile) {
     if (files_exists(fname)) {
-        LOG_D("File '%s' already exists in the output corpus directory '%s'", fname, dir);
+        LOG_D("File '%s' already exists in the output corpus directory", fname);
         return true;
     }
 
-    LOG_D("Adding file '%s' to the corpus directory '%s'", fname, dir);
+    LOG_D("Adding file '%s' to the corpus directory", fname);
 
     /* Use atomic write to ensure corpus files appear fully formed for external observers
      * (e.g., Octane's async corpus sync which may read files while fuzzer is running) */
@@ -378,6 +377,12 @@ bool input_writeCovFile(const char* dir, dynfile_t* dynfile) {
     }
 
     return true;
+}
+
+bool input_writeCovFile(const char* dir, dynfile_t* dynfile) {
+    char fname[PATH_MAX];
+    input_generateFileName(dynfile, dir, fname);
+    return input_writeCovFileAs(fname, dynfile);
 }
 
 /* true if item1 is bigger than item2 */
@@ -397,7 +402,15 @@ static bool input_cmpCov(dynfile_t* item1, dynfile_t* item2) {
 #define TAILQ_FOREACH_HF(var, head, field)                                                         \
     for ((var) = TAILQ_FIRST((head)); (var); (var) = TAILQ_NEXT((var), field))
 
-void input_addDynamicInput(run_t* run) {
+/* Holds the dynfileq write lock for its whole body (taken below, released on return).
+ * On return, `exportName` is the basename of a file just written to covDirNew whose
+ * guard set still needs recording, or "" if there is nothing to record.
+ *
+ * The lock cannot simply be released after the queue mutation: it is also what keeps
+ * `dynfile` alive for the rest of this function, since input_prepareDynamicInput
+ * TAILQ_REMOVEs and frees a queued entry when it selects an imported one.  So the work
+ * that does not need `dynfile` is handed back to the caller instead. */
+static void input_addDynamicInputLocked(run_t* run, char* exportName) {
     if (run->global->cfg.replay) {
         return;
     }
@@ -485,6 +498,43 @@ void input_addDynamicInput(run_t* run) {
 
     ATOMIC_POST_INC(run->global->io.newUnitsAdded);
 
+    /* Everything below is a --covdir_new decision, including the counters, so there is
+     * nothing to decide or count without one. */
+    if (!run->global->io.covDirNew) {
+        return;
+    }
+
+    /* An imported input (--dynamic_input) is one another host already found and Octane
+     * handed to us.  It is not a discovery of this run, and covDirNew is consumed as a
+     * discovery stream, so it must never be re-exported.
+     *
+     * Not a subcase of the edge gate below.  An imported input carries newEdges == 0
+     * when it is first enqueued, so the gate only holds it back at
+     * covDirNewMinEdges >= 1; at the default of 0 the comparison is 0 < 0 and it goes
+     * straight back out.  And once it is selected and executed it may genuinely reach
+     * code this host had not covered -- newEdges > 0 -- which clears any threshold.
+     * Measured: 20 of 22 files a run exported were byte-identical to inputs it had
+     * been handed.  Provenance is a property of the input, not of a tuning knob. */
+    if (dynfile->imported) {
+        /* First insertion of a pulled-in file: the feedback loop has not judged it. */
+        ATOMIC_POST_INC(run->global->io.covDirNewImportEnqueued);
+        return;
+    }
+    if (run->dynfileFromImport && dynfile->size == run->dynfileImportSz &&
+        util_CRC64(dynfile->data, dynfile->size) == run->dynfileImportCrc) {
+        /* The loop accepted it after executing it -- a real feedback decision, and the
+         * one that would otherwise have exported another host's input as our find.
+         *
+         * Only when the executed bytes are still the ones we were handed.  In
+         * persistent mode LLVMFuzzerCustomMutator rewrites the shared input in place
+         * and fuzz_perfFeedback copies the post-mutation length back, so an input that
+         * arrived as an import can reach here as a locally mutated descendant.  That
+         * descendant IS our discovery; suppressing it would trade the over-export this
+         * guard exists to stop for a silent under-export. */
+        ATOMIC_POST_INC(run->global->io.covDirNewImportRefound);
+        return;
+    }
+
     /* The feedback loop also accepts inputs that only refined an already-covered
      * edge (a new hit-count bucket, a deeper stack, a lower instruction/branch
      * count).  Those are worth keeping in the in-RAM queue, where they age out,
@@ -493,11 +543,66 @@ void input_addDynamicInput(run_t* run) {
      * softNewEdge + softNewPC + newBBCnt, so gating on it keeps covDirNew to
      * inputs that actually reached new code. */
     if (dynfile->newEdges < run->global->io.covDirNewMinEdges) {
+        ATOMIC_POST_INC(run->global->io.covDirNewGated);
         return;
     }
 
-    if (run->global->io.covDirNew && !input_writeCovFile(run->global->io.covDirNew, dynfile)) {
+    /* Names are content-addressed, so an input the loop accepts twice -- two threads
+     * finding it, or a re-add -- maps to a file that is already there.  Writing reports
+     * success for that case, so ask first: counting it would overstate what the
+     * directory holds, and a second coverage_data.bin entry under the same name would
+     * inflate its file_count.  (Two threads can still race past this; the write is
+     * atomic and the bytes are identical, so the cost is at worst one double count, not
+     * a corrupt file.)
+     *
+     * The name is generated here and then reused for both the write and the guard
+     * entry -- it is two CRC64 passes over the whole input, so it is worth not doing
+     * three times. */
+    char fname[PATH_MAX];
+    input_generateFileName(dynfile, run->global->io.covDirNew, fname);
+    if (files_exists(fname)) {
+        ATOMIC_POST_INC(run->global->io.covDirNewDuplicate);
+        return;
+    }
+
+    if (!input_writeCovFileAs(fname, dynfile)) {
         LOG_E("Couldn't save the new coverage data to '%s'", run->global->io.covDirNew);
+        ATOMIC_POST_INC(run->global->io.covDirNewWriteFailed);
+        return;
+    }
+    ATOMIC_POST_INC(run->global->io.covDirNewWritten);
+
+    /* Hand the name back so the caller can record this file's guard set once the
+     * dynfileq write lock is off.  Same flat-basename convention as replay. */
+    const char* base = strrchr(fname, '/');
+    base             = base ? base + 1 : fname;
+    snprintf(exportName, PATH_MAX, "%s", base);
+}
+
+void input_addDynamicInput(run_t* run) {
+    char exportName[PATH_MAX];
+    exportName[0] = '\0';
+
+    input_addDynamicInputLocked(run, exportName);
+
+    /* Deliberately out here, with the dynfileq write lock released.  Recording a file's
+     * guard set walks up to guardNb map bytes, allocates, and writes to disk under
+     * coverageData.entryMutex; doing that inside the lock would stall every other
+     * worker's corpus selection for the duration of each export.
+     *
+     * Octane reads coverage_data.bin from the harvest directory to compute
+     * guards_novel and guards_merged.  Without it they are zero on every fuzzing job,
+     * which is how an engine over-reporting its discoveries went unnoticed -- there
+     * was no independent measure of what a reported discovery actually covered.
+     *
+     * Only reached under persistent mode: fuzz_coverageDataInit leaves the fd closed
+     * otherwise, because only the persistent child resets the per-thread guard map
+     * between inputs. */
+    if (exportName[0] != '\0' && run->perThreadCovFeedbackMap) {
+        uint64_t guardNb = atomic_load_explicit(
+            &run->global->feedback.covFeedbackMap->guardNb, memory_order_relaxed);
+        fuzz_coverageDataAppendEntry(
+            run->global, run->perThreadCovFeedbackMap, guardNb, exportName);
     }
 }
 
@@ -1122,6 +1227,11 @@ bool input_prepareDynamicInput(run_t* run, bool needs_mangle) {
     memcpy(run->dynfile->data, current_input->data, current_input->size);
 
     if (is_imported) {
+        /* Remember exactly what we were handed.  If a custom mutator rewrites the
+         * shared input before it executes, the add path compares against this and
+         * treats the result as our own discovery rather than a re-found import. */
+        run->dynfileImportCrc = util_CRC64(run->dynfile->data, run->dynfile->size);
+        run->dynfileImportSz  = run->dynfile->size;
         /* Imported input was removed from list, free it after copying */
         run->current       = NULL;
         run->mutationTiers = 0; /* No mutations applied to imported input */
@@ -1234,6 +1344,15 @@ void input_enqueueDynamicInputs(honggfuzz_t* hfuzz) {
 
         run_t tmp_run;
         tmp_run.global        = hfuzz;
+        /* No thread executed this input -- it was read off disk -- so there is no
+         * per-thread guard map to attribute to it.  Left uninitialised this is a stack
+         * garbage pointer that input_addDynamicInput would dereference. */
+        tmp_run.perThreadCovFeedbackMap = NULL;
+        tmp_run.dynfileFromImport       = true;
+        /* Unread on this path -- dynfile->imported short-circuits first -- but this
+         * run_t is built field by field, so leave nothing uninitialised. */
+        tmp_run.dynfileImportCrc        = 0;
+        tmp_run.dynfileImportSz         = 0;
         dynfile_t tmp_dynfile = {
             .size          = dynamicFileSz,
             .cov           = {0xff, 0xff, 0xff, 0xff},
