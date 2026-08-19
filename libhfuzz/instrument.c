@@ -1108,6 +1108,24 @@ void instrument8BitCountersCount(void) {
 
     for (size_t i = 0; i < ARRAYSIZE(hf8bitcounters) && hf8bitcounters[i].start; i++) {
         for (size_t j = 0; j < hf8bitcounters[i].cnt; j++) {
+            /* Fast-skip whole words of untouched counters.
+             *
+             * The loop below reads and unconditionally zeroes every counter in
+             * the region.  For a target registering millions of counters that
+             * dirties every cache line of a multi-MB array on every iteration,
+             * even though the overwhelming majority of counters are zero.
+             *
+             * Peek at 8 counters at a time and skip the group when none of them
+             * were touched, leaving those lines clean.  Behaviour is unchanged:
+             * every non-zero counter is still accounted for and cleared below. */
+            if ((j & 7U) == 0U && j + sizeof(uint64_t) <= hf8bitcounters[i].cnt) {
+                uint64_t word;
+                memcpy(&word, (const void*)&hf8bitcounters[i].start[j], sizeof(word));
+                if (!word) {
+                    j += sizeof(uint64_t) - 1U;
+                    continue;
+                }
+            }
             const uint8_t v            = hf8bitcounters[i].start[j];
             hf8bitcounters[i].start[j] = 0;
             if (!v) {
