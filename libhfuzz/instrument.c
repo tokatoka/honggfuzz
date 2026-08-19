@@ -1115,14 +1115,17 @@ void instrument8BitCountersCount(void) {
              * dirties every cache line of a multi-MB array on every iteration,
              * even though the overwhelming majority of counters are zero.
              *
-             * Peek at 8 counters at a time and skip the group when none of them
+             * Peek at 32 counters at a time and skip the group when none of them
              * were touched, leaving those lines clean.  Behaviour is unchanged:
              * every non-zero counter is still accounted for and cleared below. */
-            if ((j & 7U) == 0U && j + sizeof(uint64_t) <= hf8bitcounters[i].cnt) {
-                uint64_t word;
-                memcpy(&word, (const void*)&hf8bitcounters[i].start[j], sizeof(word));
-                if (!word) {
-                    j += sizeof(uint64_t) - 1U;
+            if ((j & 31U) == 0U && j + 32U <= hf8bitcounters[i].cnt) {
+                uint64_t w0, w1, w2, w3;
+                memcpy(&w0, (const void*)&hf8bitcounters[i].start[j + 0U], sizeof(w0));
+                memcpy(&w1, (const void*)&hf8bitcounters[i].start[j + 8U], sizeof(w1));
+                memcpy(&w2, (const void*)&hf8bitcounters[i].start[j + 16U], sizeof(w2));
+                memcpy(&w3, (const void*)&hf8bitcounters[i].start[j + 24U], sizeof(w3));
+                if (!(w0 | w1 | w2 | w3)) {
+                    j += 31U;
                     continue;
                 }
             }
